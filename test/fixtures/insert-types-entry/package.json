@@ -1,0 +1,6 @@
+{
+	"name": "insert-types-entry-fixture",
+	"private": true,
+	"type": "module",
+	"types": "dist/types/entry.d.ts"
+}
