@@ -54,8 +54,8 @@ function getProjectRequires(root: string): NodeJS.Require[] {
 ////////////////////////////////////////////////////////////////////////////////
 
 /**
- * API Extractor needs to know the path to the TypeScript compiler to roll up 
- * declaration files. Resolve the compiler package from the consuming project 
+ * API Extractor needs to know the path to the TypeScript compiler to roll up
+ * declaration files. Resolve the compiler package from the consuming project
  * root to stay aligned with the host dependency tree and avoid conflicts with
  * API Extractor's own nested version.
  */
@@ -112,9 +112,9 @@ function enforceHostTypeScript(root: string): void {
 ////////////////////////////////////////////////////////////////////////////////
 
 /**
- * Load API Extractor lazyly so we can patch its TypeScript dependency before 
- * it initializes. This also avoids loading the package at all if declaration 
- * rollup is not needed, which can save time and memory in some cases since API 
+ * Load API Extractor lazyly so we can patch its TypeScript dependency before
+ * it initializes. This also avoids loading the package at all if declaration
+ * rollup is not needed, which can save time and memory in some cases since API
  * Extractor is a large dependency with many nested dependencies of its own.
  */
 async function loadApiExtractor(

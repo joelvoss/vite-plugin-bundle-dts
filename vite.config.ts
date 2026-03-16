@@ -1,49 +1,50 @@
-import { builtinModules } from "node:module";
+import { builtinModules } from 'node:module';
+import { resolve, parse, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { defineConfig } from "vite";
+import { defineConfig } from 'vite';
 
-import dtsPlugin from "./src";
+import packageJson from './package.json';
+import dtsPlugin from './src';
+
+////////////////////////////////////////////////////////////////////////////////
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const externalPackages = [
-  "@microsoft/api-extractor",
-  "magic-string",
-  "typescript",
-  "vite",
+	'@microsoft/api-extractor',
+	'magic-string',
+	'typescript',
+	'vite',
 ];
 
 const external = new Set([
-  ...builtinModules,
-  ...builtinModules.map((moduleName) => `node:${moduleName}`),
-  ...externalPackages,
+	...builtinModules,
+	...builtinModules.map((moduleName) => `node:${moduleName}`),
+	...externalPackages,
 ]);
 
-export default defineConfig({
-  build: {
-    emptyOutDir: true,
-    lib: {
-      entry: "src/index.ts",
-      fileName: (format) => (format === "es" ? "index.js" : "index.cjs"),
-      formats: ["es", "cjs"],
-      name: "VitePluginBundleDts",
-    },
-    rollupOptions: {
-      external: (id) => {
-        if (id.startsWith("node:")) {
-          return true;
-        }
+////////////////////////////////////////////////////////////////////////////////
 
-        return external.has(id);
-      },
-      output: {
-        exports: "named",
-      },
-    },
-    sourcemap: true,
-  },
-  plugins: [
-    dtsPlugin({
-      insertTypesEntry: true,
-      rollupTypes: true,
-    }),
-  ],
+export default defineConfig({
+	plugins: [
+		dtsPlugin({ rollupTypes: true, insertTypesEntry: true, logLevel: 'error' }),
+	],
+	build: {
+		// NOTE(joel): Don't minify, because every consumer will minify themselves
+		// anyway. We're only bundling for the sake of publishing to npm.
+		minify: false,
+		lib: {
+			entry: resolve(__dirname, packageJson.source),
+			formats: ['cjs', 'es'],
+			fileName: parse(packageJson.module).name,
+		},
+		rollupOptions: {
+			external: (id) => {
+				if (id.startsWith('node:')) return true;
+				return external.has(id);
+			},
+			output: { exports: 'named' },
+		},
+	},
 });
