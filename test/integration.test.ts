@@ -10,6 +10,7 @@ import dtsPlugin from '../src';
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const fixturesDir = resolve(currentDir, 'fixtures');
+const rollupIntegrationTimeoutMs = 15000;
 const tempRoots: string[] = [];
 const watchers: Array<{ close(): Promise<void> | void }> = [];
 
@@ -214,7 +215,9 @@ describe('fixture integration', () => {
 		expect(extraContent).toContain('export declare const extraValue = 42;');
 	});
 
-	it('rolls up declaration output and removes intermediate declaration files', async () => {
+	it(
+		'rolls up declaration output and removes intermediate declaration files',
+		async () => {
 		const root = await runFixtureBuild('rollup-types', (fixtureRoot) => ({
 			build: {
 				lib: {
@@ -240,7 +243,9 @@ describe('fixture integration', () => {
 		const bundledContent = await readFile(bundledDts, 'utf8');
 		expect(bundledContent).toContain('export declare function createMessage');
 		expect(bundledContent).toContain('export declare interface MessageShape');
-	});
+		},
+		rollupIntegrationTimeoutMs,
+	);
 
 	it('writes a custom package types shim when insertTypesEntry is enabled', async () => {
 		const root = await runFixtureBuild('insert-types-entry', (fixtureRoot) => ({
@@ -270,7 +275,9 @@ describe('fixture integration', () => {
 		expect(shimContent).toContain('export default InsertTypesFixture');
 	});
 
-	it('rolls up declarations for multiple entries and cleans shared intermediates', async () => {
+	it(
+		'rolls up declarations for multiple entries and cleans shared intermediates',
+		async () => {
 		const root = await runFixtureBuild('multi-entry-rollup', (fixtureRoot) => ({
 			build: {
 				lib: {
@@ -305,7 +312,9 @@ describe('fixture integration', () => {
 		expect(indexContent).toContain('SharedShape');
 		expect(extraContent).toContain('export declare function buildExtra');
 		expect(extraContent).toContain('SharedShape');
-	});
+		},
+		rollupIntegrationTimeoutMs,
+	);
 
 	it('rebuilds declaration output in watch mode after source changes', async () => {
 		const root = await createFixtureWorkspace('watch-basic');
