@@ -26,7 +26,7 @@ The plugin requires Vite `>=5`.
 
 ```ts
 import { defineConfig } from 'vite';
-import bundleDts from 'vite-plugin-bundle-dts';
+import { bundleDts } from 'vite-plugin-bundle-dts';
 
 export default defineConfig({
 	build: {
@@ -85,7 +85,7 @@ For a conventional package, keep these files aligned:
 
 ```ts
 import { defineConfig } from 'vite';
-import bundleDts from 'vite-plugin-bundle-dts';
+import { bundleDts } from 'vite-plugin-bundle-dts';
 
 export default defineConfig({
 	resolve: {
@@ -112,7 +112,7 @@ This is the default case. The plugin reads the Vite library entry and emits matc
 
 ```ts
 import { defineConfig } from 'vite';
-import bundleDts from 'vite-plugin-bundle-dts';
+import { bundleDts } from 'vite-plugin-bundle-dts';
 
 export default defineConfig({
 	build: {
@@ -153,7 +153,7 @@ The plugin supports object-style `build.lib.entry` and emits one declaration ent
 
 ```ts
 import { defineConfig } from 'vite';
-import bundleDts from 'vite-plugin-bundle-dts';
+import { bundleDts } from 'vite-plugin-bundle-dts';
 
 export default defineConfig({
 	build: {
@@ -295,7 +295,7 @@ The plugin includes a built-in JSON resolver and also supports custom resolvers 
 
 ```ts
 import { defineConfig } from 'vite';
-import bundleDts from 'vite-plugin-bundle-dts';
+import { bundleDts } from 'vite-plugin-bundle-dts';
 
 export default defineConfig({
 	plugins: [
