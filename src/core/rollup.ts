@@ -199,12 +199,12 @@ export async function rollupDeclarationFiles({
 			messages: {
 				compilerMessageReporting: {
 					default: {
-						logLevel: ExtractorLogLevel.Warning,
+						logLevel: ExtractorLogLevel.None,
 					},
 				},
 				extractorMessageReporting: {
 					default: {
-						logLevel: ExtractorLogLevel.Warning,
+						logLevel: ExtractorLogLevel.None,
 					},
 				},
 				...(rollupConfig.messages as Record<string, unknown> | undefined),

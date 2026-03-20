@@ -40,7 +40,7 @@ export interface BeforeWriteFileResult {
 	content?: string;
 }
 
-export interface DtsPluginOptions {
+export interface BundleDtsOptions {
 	root?: string;
 	entryRoot?: string;
 	outDir?: string | string[];

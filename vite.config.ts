@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 
 import packageJson from './package.json';
-import dtsPlugin from './src';
+import bundleDts from './src';
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -28,7 +28,7 @@ const external = new Set([
 
 export default defineConfig({
 	plugins: [
-		dtsPlugin({ rollupTypes: true, insertTypesEntry: true, logLevel: 'error' }),
+		bundleDts({ rollupTypes: true, insertTypesEntry: true, logLevel: 'error' }),
 	],
 	build: {
 		// NOTE(joel): Don't minify, because every consumer will minify themselves
