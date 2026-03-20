@@ -1,6 +1,6 @@
 {
   "name": "vite-plugin-bundle-dts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Vite plugin for generating and bundling TypeScript declaration files.",
   "author": "Joel Voss <mail@joelvoss.com>",
   "license": "MIT",
