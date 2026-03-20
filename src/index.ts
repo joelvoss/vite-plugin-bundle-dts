@@ -1,9 +1,9 @@
-export { dtsPlugin as default, dtsPlugin } from './core/plugin';
+export { bundleDts as default, bundleDts } from './core/plugin';
 export { editSourceMapDir } from './utils/source-map';
 export type {
 	BeforeWriteFileResult,
 	DtsOutputFile,
-	DtsPluginOptions,
+	BundleDtsOptions as DtsPluginOptions,
 	DtsResolver,
 	DtsResolverContext,
 	DtsResolverResult,

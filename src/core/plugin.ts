@@ -12,7 +12,7 @@ import {
 } from 'vite';
 
 import { createJsonResolver } from '../resolvers/json';
-import type { DtsPluginOptions, DtsResolver, PathAlias } from '../types';
+import type { BundleDtsOptions, DtsResolver, PathAlias } from '../types';
 import { hasExportDefault, hasNormalExport } from '../utils/ast';
 import {
 	ensureAbsolute,
@@ -124,7 +124,7 @@ function maybeEmitSourceFile(
  * that all relevant files are processed and emitted correctly, even in watch
  * mode with incremental changes.
  */
-export function dtsPlugin(options: DtsPluginOptions = {}): Plugin {
+export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 	const {
 		tsconfigPath,
 		logLevel,
