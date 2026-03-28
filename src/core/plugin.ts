@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { cpus } from 'node:os';
 import { dirname, basename, relative } from 'node:path';
@@ -169,6 +169,13 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 	let timeRecord = 0;
 	let viteConfig: ResolvedConfig | undefined;
 
+	// Vite 8+ (Rolldown) resolves symlinks in module IDs, which can produce
+	// paths like `/private/var/...` on macOS where the project root uses
+	// `/var/...`. Track both prefixes so incoming IDs can be remapped to match
+	// the paths TypeScript stores internally.
+	let realRootPrefix = '';
+	let rootPrefix = '';
+
 	// Built-ins are always registered first so callers can extend behavior
 	// without having to remember to re-add the default JSON support.
 	const resolvers = parseResolvers([
@@ -187,6 +194,20 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			options.bundledPackages ??
 			[],
 	};
+
+	/**
+	 * Normalize a file path from Vite so it matches the un-resolved symlink
+	 * paths stored by the TypeScript program. Without this, Rolldown's
+	 * real-path-resolved IDs (e.g. `/private/var/...` on macOS) would fail
+	 * to look up source files in the TS program that knows them as
+	 * `/var/...`.
+	 */
+	function normalizeId(id: string): string {
+		if (realRootPrefix && id.startsWith(realRootPrefix)) {
+			return rootPrefix + id.slice(realRootPrefix.length);
+		}
+		return id;
+	}
 
 	function setOutputFile(filePath: string, content: string): void {
 		outputFiles.set(filePath, content);
@@ -290,13 +311,14 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			}
 		},
 		async buildStart() {
-			// Vite can call buildStart more than once in watch mode. Refresh the
-			// cached declaration state here as a fallback so rebuilds stay correct
-			// even if the watcher backend does not trigger watchChange.
+			// Vite can call buildStart more than once in watch mode or when
+			// building multiple environments (Vite 8+). Refresh the cached
+			// declaration state here so each build cycle starts clean.
 			if (program) {
 				bundled = false;
 				timeRecord = 0;
 				outputFiles.clear();
+				transformedFiles.clear();
 				diagnostics.length = 0;
 				for (const file of rootNames) {
 					rootFiles.add(file);
@@ -317,6 +339,23 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			// runs do not leak into the next writeBundle phase.
 			outputFiles.clear();
 			diagnostics.length = 0;
+
+			// Compute the real-path prefix once so we can remap Vite IDs later.
+			// Rolldown (Vite 8+) resolves symlinks in module IDs which can cause
+			// a mismatch with the paths TypeScript stores internally.
+			if (!realRootPrefix) {
+				const normalizedRoot = normalizePath(root);
+				try {
+					const realRoot = normalizePath(realpathSync(root));
+					if (realRoot !== normalizedRoot) {
+						realRootPrefix = realRoot;
+						rootPrefix = normalizedRoot;
+					}
+				} catch {
+					// Ignore if realpath fails (root doesn't exist yet, etc.)
+				}
+			}
+
 			configPath = tsconfigPath
 				? ensureAbsolute(tsconfigPath, root)
 				: ts.findConfigFile(root, ts.sys.fileExists);
@@ -328,6 +367,15 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 				outDir: '.',
 				declarationDir: '.',
 			};
+
+			// TypeScript 6 changed how `commonSourceDirectory` is computed when
+			// `configFilePath` is present: it uses the tsconfig directory instead
+			// of the deepest common ancestor of source files. This causes emit
+			// paths to include extra directory segments (e.g. `./src/index.d.ts`
+			// instead of `./index.d.ts`). Since the plugin has already parsed the
+			// tsconfig and extracted everything it needs, removing this property
+			// restores the previous emit-path behaviour.
+			delete compilerOptions.configFilePath;
 
 			rawCompilerOptions =
 				(content?.raw.compilerOptions as Record<string, unknown> | undefined) ??
@@ -469,7 +517,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			timeRecord += Date.now() - startTime;
 		},
 		async transform(code, id) {
-			const normalizedId = normalizePath(id).split('?')[0];
+			const normalizedId = normalizeId(normalizePath(id).split('?')[0]);
 			const resolver = resolvers.find((entry) => entry.supports(normalizedId));
 
 			// Skip anything outside the filtered project view, and avoid
@@ -531,13 +579,11 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 					const result = program.emit(
 						sourceFile,
 						(name, text) => {
-							setOutputFile(
-								resolvePath(
-									publicRoot,
-									relative(outDir, ensureAbsolute(name, outDir)),
-								),
-								text,
+							const key = resolvePath(
+								publicRoot,
+								relative(outDir, ensureAbsolute(name, outDir)),
 							);
+							setOutputFile(key, text);
 						},
 						undefined,
 						true,
@@ -564,7 +610,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			return undefined;
 		},
 		watchChange(id) {
-			const normalizedId = normalizePath(id).split('?')[0];
+			const normalizedId = normalizeId(normalizePath(id).split('?')[0]);
 			const resolver = resolvers.find((entry) => entry.supports(normalizedId));
 			if (
 				!host ||
