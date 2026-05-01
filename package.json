@@ -37,9 +37,9 @@
     "vite": ">=5.0.0"
   },
   "dependencies": {
-    "@microsoft/api-extractor": "7.58.1",
+    "@microsoft/api-extractor": "7.58.7",
     "magic-string": "0.30.21",
-    "typescript": "6.0.2"
+    "typescript": "6.0.3"
   },
   "devDependencies": {
     "@types/node": "25.5.2",
