@@ -11,6 +11,7 @@ lerna-debug.log*
 node_modules
 dist
 types
+coverage
 *.local
 
 # Editor directories and files

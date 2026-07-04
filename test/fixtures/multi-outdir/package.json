@@ -1,0 +1,5 @@
+{
+	"name": "multi-outdir-fixture",
+	"private": true,
+	"type": "module"
+}

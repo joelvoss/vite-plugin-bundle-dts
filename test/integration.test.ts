@@ -218,31 +218,31 @@ describe('fixture integration', () => {
 	it(
 		'rolls up declaration output and removes intermediate declaration files',
 		async () => {
-		const root = await runFixtureBuild('rollup-types', (fixtureRoot) => ({
-			build: {
-				lib: {
-					entry: resolve(fixtureRoot, 'src/index.ts'),
-					name: 'RollupTypesFixture',
-					fileName: 'index',
+			const root = await runFixtureBuild('rollup-types', (fixtureRoot) => ({
+				build: {
+					lib: {
+						entry: resolve(fixtureRoot, 'src/index.ts'),
+						name: 'RollupTypesFixture',
+						fileName: 'index',
+					},
 				},
-			},
-			plugins: [
-				dtsPlugin({
-					declarationOnly: true,
-					rollupTypes: true,
-				}),
-			],
-		}));
+				plugins: [
+					dtsPlugin({
+						declarationOnly: true,
+						rollupTypes: true,
+					}),
+				],
+			}));
 
-		const bundledDts = resolve(root, 'dist/index.d.ts');
-		const helperDts = resolve(root, 'dist/helper.d.ts');
+			const bundledDts = resolve(root, 'dist/index.d.ts');
+			const helperDts = resolve(root, 'dist/helper.d.ts');
 
-		await expectFile(bundledDts);
-		await expectNoFile(helperDts);
+			await expectFile(bundledDts);
+			await expectNoFile(helperDts);
 
-		const bundledContent = await readFile(bundledDts, 'utf8');
-		expect(bundledContent).toContain('export declare function createMessage');
-		expect(bundledContent).toContain('export declare interface MessageShape');
+			const bundledContent = await readFile(bundledDts, 'utf8');
+			expect(bundledContent).toContain('export declare function createMessage');
+			expect(bundledContent).toContain('export declare interface MessageShape');
 		},
 		rollupIntegrationTimeoutMs,
 	);
@@ -278,40 +278,43 @@ describe('fixture integration', () => {
 	it(
 		'rolls up declarations for multiple entries and cleans shared intermediates',
 		async () => {
-		const root = await runFixtureBuild('multi-entry-rollup', (fixtureRoot) => ({
-			build: {
-				lib: {
-					entry: {
-						index: resolve(fixtureRoot, 'src/index.ts'),
-						extra: resolve(fixtureRoot, 'src/extra.ts'),
+			const root = await runFixtureBuild(
+				'multi-entry-rollup',
+				(fixtureRoot) => ({
+					build: {
+						lib: {
+							entry: {
+								index: resolve(fixtureRoot, 'src/index.ts'),
+								extra: resolve(fixtureRoot, 'src/extra.ts'),
+							},
+							name: 'MultiEntryRollupFixture',
+							fileName: 'index',
+						},
 					},
-					name: 'MultiEntryRollupFixture',
-					fileName: 'index',
-				},
-			},
-			plugins: [
-				dtsPlugin({
-					declarationOnly: true,
-					rollupTypes: true,
+					plugins: [
+						dtsPlugin({
+							declarationOnly: true,
+							rollupTypes: true,
+						}),
+					],
 				}),
-			],
-		}));
+			);
 
-		const indexDts = resolve(root, 'dist/index.d.ts');
-		const extraDts = resolve(root, 'dist/extra.d.ts');
-		const sharedDts = resolve(root, 'dist/shared.d.ts');
+			const indexDts = resolve(root, 'dist/index.d.ts');
+			const extraDts = resolve(root, 'dist/extra.d.ts');
+			const sharedDts = resolve(root, 'dist/shared.d.ts');
 
-		await expectFile(indexDts);
-		await expectFile(extraDts);
-		await expectNoFile(sharedDts);
+			await expectFile(indexDts);
+			await expectFile(extraDts);
+			await expectNoFile(sharedDts);
 
-		const indexContent = await readFile(indexDts, 'utf8');
-		const extraContent = await readFile(extraDts, 'utf8');
+			const indexContent = await readFile(indexDts, 'utf8');
+			const extraContent = await readFile(extraDts, 'utf8');
 
-		expect(indexContent).toContain('export declare const primaryLabel');
-		expect(indexContent).toContain('SharedShape');
-		expect(extraContent).toContain('export declare function buildExtra');
-		expect(extraContent).toContain('SharedShape');
+			expect(indexContent).toContain('export declare const primaryLabel');
+			expect(indexContent).toContain('SharedShape');
+			expect(extraContent).toContain('export declare function buildExtra');
+			expect(extraContent).toContain('SharedShape');
 		},
 		rollupIntegrationTimeoutMs,
 	);
@@ -404,4 +407,252 @@ describe('fixture integration', () => {
 		);
 		expect(rebuiltJsonContent).toContain('"count": 2');
 	}, 20000);
+});
+
+describe('plugin hooks', () => {
+	it('invokes afterDiagnostic with reported diagnostics', async () => {
+		const receivedDiagnostics: unknown[] = [];
+
+		await runFixtureBuild('diagnostics-basic', (fixtureRoot) => ({
+			build: {
+				lib: {
+					entry: resolve(fixtureRoot, 'src/index.ts'),
+					name: 'DiagnosticsBasicFixture',
+					fileName: 'index',
+				},
+			},
+			plugins: [
+				dtsPlugin({
+					declarationOnly: true,
+					afterDiagnostic(diagnostics) {
+						receivedDiagnostics.push(...diagnostics);
+					},
+				}),
+			],
+		}));
+
+		expect(receivedDiagnostics.length).toBeGreaterThan(0);
+	});
+
+	it('lets beforeWriteFile redirect the output path and content', async () => {
+		const seenFiles: string[] = [];
+
+		const root = await runFixtureBuild('hooks-basic', (fixtureRoot) => ({
+			build: {
+				lib: {
+					entry: resolve(fixtureRoot, 'src/index.ts'),
+					name: 'HooksBasicFixture',
+					fileName: 'index',
+				},
+			},
+			plugins: [
+				dtsPlugin({
+					declarationOnly: true,
+					beforeWriteFile(filePath, content) {
+						seenFiles.push(filePath);
+						if (filePath.endsWith('index.d.ts')) {
+							return {
+								filePath: filePath.replace('index.d.ts', 'renamed.d.ts'),
+								content: `${content}\n// rewritten by beforeWriteFile\n`,
+							};
+						}
+						return undefined;
+					},
+				}),
+			],
+		}));
+
+		expect(seenFiles.some((filePath) => filePath.endsWith('index.d.ts'))).toBe(
+			true,
+		);
+
+		const renamedDts = resolve(root, 'dist/renamed.d.ts');
+		await expectFile(renamedDts);
+		await expectNoFile(resolve(root, 'dist/index.d.ts'));
+
+		const renamedContent = await readFile(renamedDts, 'utf8');
+		expect(renamedContent).toContain('// rewritten by beforeWriteFile');
+	});
+
+	it('lets beforeWriteFile suppress a write by returning false', async () => {
+		const root = await runFixtureBuild('hooks-basic', (fixtureRoot) => ({
+			build: {
+				lib: {
+					entry: resolve(fixtureRoot, 'src/index.ts'),
+					name: 'HooksBasicSuppressFixture',
+					fileName: 'index',
+				},
+			},
+			plugins: [
+				dtsPlugin({
+					declarationOnly: true,
+					beforeWriteFile(filePath) {
+						if (filePath.endsWith('index.d.ts')) {
+							return false;
+						}
+						return undefined;
+					},
+				}),
+			],
+		}));
+
+		await expectNoFile(resolve(root, 'dist/index.d.ts'));
+	});
+
+	it('invokes afterBuild with the emitted file map', async () => {
+		let emitted: ReadonlyMap<string, string> | undefined;
+
+		const root = await runFixtureBuild('hooks-basic', (fixtureRoot) => ({
+			build: {
+				lib: {
+					entry: resolve(fixtureRoot, 'src/index.ts'),
+					name: 'HooksBasicAfterBuildFixture',
+					fileName: 'index',
+				},
+			},
+			plugins: [
+				dtsPlugin({
+					declarationOnly: true,
+					afterBuild(emittedFiles) {
+						emitted = emittedFiles;
+					},
+				}),
+			],
+		}));
+
+		expect(emitted).toBeDefined();
+		const indexDts = resolve(root, 'dist/index.d.ts');
+		expect(emitted?.has(indexDts)).toBe(true);
+		expect(emitted?.get(indexDts)).toContain('export interface Shape');
+	});
+
+	it(
+		'invokes afterRollup when rollupTypes is enabled',
+		async () => {
+			let rollupResult: unknown;
+
+			await runFixtureBuild('rollup-types', (fixtureRoot) => ({
+				build: {
+					lib: {
+						entry: resolve(fixtureRoot, 'src/index.ts'),
+						name: 'AfterRollupFixture',
+						fileName: 'index',
+					},
+				},
+				plugins: [
+					dtsPlugin({
+						declarationOnly: true,
+						rollupTypes: true,
+						afterRollup(result) {
+							rollupResult = result;
+						},
+					}),
+				],
+			}));
+
+			expect(rollupResult).toBeDefined();
+		},
+		rollupIntegrationTimeoutMs,
+	);
+
+	it('rejects writes outside the output directory when strictOutput is enabled', async () => {
+		const root = await runFixtureBuild('hooks-basic', (fixtureRoot) => ({
+			build: {
+				lib: {
+					entry: resolve(fixtureRoot, 'src/index.ts'),
+					name: 'StrictOutputFixture',
+					fileName: 'index',
+				},
+			},
+			plugins: [
+				dtsPlugin({
+					declarationOnly: true,
+					strictOutput: true,
+					beforeWriteFile(filePath, content) {
+						if (filePath.endsWith('index.d.ts')) {
+							return {
+								filePath: resolve(dirname(filePath), '../escaped.d.ts'),
+								content,
+							};
+						}
+						return undefined;
+					},
+				}),
+			],
+		}));
+
+		await expectNoFile(resolve(root, 'escaped.d.ts'));
+		await expectNoFile(resolve(root, 'dist/index.d.ts'));
+	});
+
+	it('allows writes outside the output directory when strictOutput is disabled', async () => {
+		const root = await runFixtureBuild('hooks-basic', (fixtureRoot) => ({
+			build: {
+				lib: {
+					entry: resolve(fixtureRoot, 'src/index.ts'),
+					name: 'StrictOutputDisabledFixture',
+					fileName: 'index',
+				},
+			},
+			plugins: [
+				dtsPlugin({
+					declarationOnly: true,
+					strictOutput: false,
+					beforeWriteFile(filePath, content) {
+						if (filePath.endsWith('index.d.ts')) {
+							return {
+								filePath: resolve(dirname(filePath), '../escaped.d.ts'),
+								content,
+							};
+						}
+						return undefined;
+					},
+				}),
+			],
+		}));
+
+		await expectFile(resolve(root, 'escaped.d.ts'));
+	});
+});
+
+describe('multiple outDirs', () => {
+	it('copies emitted declarations and rewrites source maps into secondary outDirs', async () => {
+		const root = await runFixtureBuild('multi-outdir', (fixtureRoot) => ({
+			build: {
+				lib: {
+					entry: resolve(fixtureRoot, 'src/index.ts'),
+					name: 'MultiOutdirFixture',
+					fileName: 'index',
+				},
+			},
+			plugins: [
+				dtsPlugin({
+					declarationOnly: true,
+					outDir: ['dist', 'nested/dist-secondary'],
+				}),
+			],
+		}));
+
+		const primaryDts = resolve(root, 'dist/index.d.ts');
+		const secondaryDts = resolve(root, 'nested/dist-secondary/index.d.ts');
+		const primaryMap = resolve(root, 'dist/index.d.ts.map');
+		const secondaryMap = resolve(root, 'nested/dist-secondary/index.d.ts.map');
+
+		await expectFile(primaryDts);
+		await expectFile(secondaryDts);
+		await expectFile(primaryMap);
+		await expectFile(secondaryMap);
+
+		const primaryContent = await readFile(primaryDts, 'utf8');
+		const secondaryContent = await readFile(secondaryDts, 'utf8');
+		expect(secondaryContent).toBe(primaryContent);
+		expect(secondaryContent).toContain('export interface Shape');
+
+		const primaryMapContent = JSON.parse(await readFile(primaryMap, 'utf8'));
+		const secondaryMapContent = JSON.parse(
+			await readFile(secondaryMap, 'utf8'),
+		);
+		expect(Array.isArray(secondaryMapContent.sources)).toBe(true);
+		expect(secondaryMapContent.sources).not.toEqual(primaryMapContent.sources);
+	});
 });

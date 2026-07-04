@@ -37,6 +37,10 @@ test() {
     echo "Running vitest in watch mode..."
     vitest
     return
+  elif [ "$1" = "-c" ] || [ "$1" = "--coverage" ]; then
+    echo "Running vitest with coverage..."
+    vitest run --coverage
+    return
   else
     echo "Running vitest..."
     vitest run
@@ -62,7 +66,7 @@ help() {
   echo "  format      Format code"
   echo "  typecheck   Typecheck code"
   echo "  lint        Lint code"
-  echo "  test        Run tests"
+  echo "  test        Run tests (-w/--watch, -c/--coverage)"
   echo "  validate    Validate code"
   echo "  clean       Clean temporary files/directories"
   echo "  help        Show help"
