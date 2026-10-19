@@ -35,15 +35,15 @@ typecheck() {
 test() {
   if [ "$1" = "-w" ] || [ "$1" = "--watch" ]; then
     echo "Running vitest in watch mode..."
-    vitest
+    vitest --exclude '**/dist/**' "${@:2}"
     return
   elif [ "$1" = "-c" ] || [ "$1" = "--coverage" ]; then
     echo "Running vitest with coverage..."
-    vitest run --coverage
+    vitest run --coverage --exclude '**/dist/**' "${@:2}"
     return
   else
     echo "Running vitest..."
-    vitest run
+    vitest run --exclude '**/dist/**' "$@"
   fi
 }
 

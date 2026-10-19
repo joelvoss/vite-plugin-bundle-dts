@@ -2,7 +2,7 @@ import { dirname } from 'node:path';
 
 import ts from 'typescript';
 
-import { ensureAbsolute } from './common';
+import { ensureAbsolute } from './common.ts';
 
 export interface LoadedTsConfig {
 	fileNames: string[];

@@ -1,6 +1,6 @@
 import { relative } from 'node:path';
 
-import { normalizePath } from './common';
+import { normalizePath, resolvePath } from './common.ts';
 
 export function editSourceMapDir(
 	content: string,
@@ -15,7 +15,7 @@ export function editSourceMapDir(
 	try {
 		const sourceMap = JSON.parse(content) as { sources?: string[] };
 		sourceMap.sources = (sourceMap.sources ?? []).map((source) =>
-			normalizePath(relative(relativeOutDir, source)),
+			normalizePath(relative(toDir, resolvePath(fromDir, source))),
 		);
 		return JSON.stringify(sourceMap);
 	} catch {

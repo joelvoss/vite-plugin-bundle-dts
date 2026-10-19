@@ -1,4 +1,4 @@
-import { normalizePath } from './common';
+import { normalizePath } from './common.ts';
 
 type FilterPattern = string | RegExp;
 
