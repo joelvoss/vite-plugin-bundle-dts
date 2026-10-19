@@ -39,7 +39,7 @@
   "dependencies": {
     "@microsoft/api-extractor": "7.59.4",
     "magic-string": "1.4.3",
-    "typescript": "6.0.3"
+    "typescript": "7.0.2"
   },
   "devDependencies": {
     "@types/node": "26.6.5",
