@@ -6,8 +6,8 @@ import type {
 	IExtractorInvokeOptions,
 } from '@microsoft/api-extractor';
 
-import { normalizePath, resolvePath } from '../utils/common';
-import { tryGetPkgPath } from '../utils/path';
+import { normalizePath, resolvePath } from '../utils/common.ts';
+import { tryGetPkgPath } from '../utils/path.ts';
 
 ////////////////////////////////////////////////////////////////////////////////
 

@@ -1,5 +1,5 @@
-export { bundleDts as default, bundleDts } from './core/plugin';
-export { editSourceMapDir } from './utils/source-map';
+export { bundleDts as default, bundleDts } from './core/plugin.ts';
+export { editSourceMapDir } from './utils/source-map.ts';
 export type {
 	BeforeWriteFileResult,
 	DtsOutputFile,
@@ -9,4 +9,4 @@ export type {
 	DtsResolverResult,
 	MaybePromise,
 	PathAlias,
-} from './types';
+} from './types.ts';

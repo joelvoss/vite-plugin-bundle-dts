@@ -1,14 +1,14 @@
 import { dirname } from 'node:path';
 
-import MagicString from 'magic-string';
+import { MagicString } from 'magic-string';
 import ts from 'typescript';
 
 import type {
 	TransformDeclarationOptions,
 	TransformDeclarationResult,
-} from '../types';
-import { walkSourceFile } from '../utils/ast';
-import { transformAlias } from '../utils/path';
+} from '../types.ts';
+import { walkSourceFile } from '../utils/ast.ts';
+import { transformAlias } from '../utils/path.ts';
 
 ////////////////////////////////////////////////////////////////////////////////
 

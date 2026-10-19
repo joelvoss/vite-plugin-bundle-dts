@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vite';
 
-import packageJson from './package.json';
-import bundleDts from './src';
+import packageJson from './package.json' with { type: 'json' };
+import bundleDts from './src/index.ts';
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -40,6 +40,7 @@ export default defineConfig({
 			fileName: parse(packageJson.module).name,
 		},
 		rollupOptions: {
+			platform: 'node',
 			external: (id) => {
 				if (id.startsWith('node:')) return true;
 				return external.has(id);

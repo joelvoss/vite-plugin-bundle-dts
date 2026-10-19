@@ -8,8 +8,13 @@ import {
 	sep,
 } from 'node:path';
 
-import type { PathAlias } from '../types';
-import { ensureAbsolute, isRegExp, normalizePath, resolvePath } from './common';
+import type { PathAlias } from '../types.ts';
+import {
+	ensureAbsolute,
+	isRegExp,
+	normalizePath,
+	resolvePath,
+} from './common.ts';
 
 const speRE = /[\\/]/;
 const regexpSymbolRE = /([$.\\+?()[\]!<=|{}^,])/g;
@@ -220,8 +225,10 @@ export function tryGetPkgPath(beginPath: string): string | undefined {
 
 export function toCapitalCase(value: string): string {
 	const compact = value.trim().replace(/\s+/g, '-');
-	const camel = compact.replace(/-+(\w)/g, (_, character: string | undefined) =>
-		character ? character.toUpperCase() : '',
+	const camel = compact.replace(
+		/-+(\w)/g,
+		(_, character: string | undefined) =>
+			character ? character.toUpperCase() : '',
 	);
 	return (camel.charAt(0).toLocaleUpperCase() + camel.slice(1)).replace(
 		/[^\w]/g,

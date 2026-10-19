@@ -11,9 +11,9 @@ import {
 	type ResolvedConfig,
 } from 'vite';
 
-import { createJsonResolver } from '../resolvers/json';
-import type { BundleDtsOptions, DtsResolver, PathAlias } from '../types';
-import { hasExportDefault, hasNormalExport } from '../utils/ast';
+import { createJsonResolver } from '../resolvers/json.ts';
+import type { BundleDtsOptions, DtsResolver, PathAlias } from '../types.ts';
+import { hasExportDefault, hasNormalExport } from '../utils/ast.ts';
 import {
 	ensureAbsolute,
 	ensureArray,
@@ -22,8 +22,8 @@ import {
 	runParallel,
 	unwrapPromise,
 	resolvePath,
-} from '../utils/common';
-import { createFilter } from '../utils/filter';
+} from '../utils/common.ts';
+import { createFilter } from '../utils/filter.ts';
 import {
 	extPrefix,
 	findTypesPath,
@@ -36,16 +36,16 @@ import {
 	toEntryMap,
 	tsToDts,
 	tryGetPkgPath,
-} from '../utils/path';
-import { editSourceMapDir } from '../utils/source-map';
+} from '../utils/path.ts';
+import { editSourceMapDir } from '../utils/source-map.ts';
 import {
 	getTsConfig,
 	loadTsConfig,
 	resolveConfigDir,
 	setModuleResolution,
-} from '../utils/tsconfig';
-import { getTsLibFolder, rollupDeclarationFiles } from './rollup';
-import { transformDeclarationContent } from './transform';
+} from '../utils/tsconfig.ts';
+import { getTsLibFolder, rollupDeclarationFiles } from './rollup.ts';
+import { transformDeclarationContent } from './transform.ts';
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -168,11 +168,6 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 	let bundled = false;
 	let timeRecord = 0;
 	let viteConfig: ResolvedConfig | undefined;
-
-	// Vite 8+ (Rolldown) resolves symlinks in module IDs, which can produce
-	// paths like `/private/var/...` on macOS where the project root uses
-	// `/var/...`. Track both prefixes so incoming IDs can be remapped to match
-	// the paths TypeScript stores internally.
 	let realRootPrefix = '';
 	let rootPrefix = '';
 
@@ -195,18 +190,12 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			[],
 	};
 
-	/**
-	 * Normalize a file path from Vite so it matches the un-resolved symlink
-	 * paths stored by the TypeScript program. Without this, Rolldown's
-	 * real-path-resolved IDs (e.g. `/private/var/...` on macOS) would fail
-	 * to look up source files in the TS program that knows them as
-	 * `/var/...`.
-	 */
 	function normalizeId(id: string): string {
-		if (realRootPrefix && id.startsWith(realRootPrefix)) {
-			return rootPrefix + id.slice(realRootPrefix.length);
+		const normalizedId = normalizePath(id);
+		if (realRootPrefix && normalizedId.startsWith(realRootPrefix)) {
+			return rootPrefix + normalizedId.slice(realRootPrefix.length);
 		}
-		return id;
+		return normalizedId;
 	}
 
 	function setOutputFile(filePath: string, content: string): void {
@@ -220,14 +209,14 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 		if (isNativeObject(aliasOptions)) {
 			aliases = Object.entries(aliasOptions).map(([find, replacement]) => ({
 				find,
-				replacement: resolvePath(String(replacement)),
+				replacement: normalizeId(resolvePath(String(replacement))),
 			}));
 			return;
 		}
 
 		aliases = ensureArray(aliasOptions as PathAlias[]).map((alias) => ({
 			...alias,
-			replacement: resolvePath(alias.replacement),
+			replacement: normalizeId(resolvePath(alias.replacement)),
 		}));
 	}
 
@@ -236,6 +225,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 		apply: 'build',
 		enforce: 'pre',
 		config(config) {
+			root = ensureAbsolute(options.root ?? config.root, process.cwd());
 			// Capture aliases early so declaration rewriting can mirror runtime
 			// imports.
 			parseViteAliases(config.resolve?.alias ?? []);
@@ -263,7 +253,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			logger = logLevel
 				? createLogger(logLevel, { allowClearScreen: config.clearScreen })
 				: config.logger;
-			root = ensureAbsolute(options.root, config.root);
+			root = ensureAbsolute(options.root ?? root, config.root);
 
 			const libraryConfig = config.build.lib || undefined;
 			if (libraryConfig?.entry) {
@@ -339,10 +329,6 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			// runs do not leak into the next writeBundle phase.
 			outputFiles.clear();
 			diagnostics.length = 0;
-
-			// Compute the real-path prefix once so we can remap Vite IDs later.
-			// Rolldown (Vite 8+) resolves symlinks in module IDs which can cause
-			// a mismatch with the paths TypeScript stores internally.
 			if (!realRootPrefix) {
 				const normalizedRoot = normalizePath(root);
 				try {
@@ -352,7 +338,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 						rootPrefix = normalizedRoot;
 					}
 				} catch {
-					// Ignore if realpath fails (root doesn't exist yet, etc.)
+					// Ignore if the configured project root cannot be resolved.
 				}
 			}
 

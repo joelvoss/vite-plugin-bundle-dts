@@ -1,6 +1,6 @@
 import { relative } from 'node:path';
 
-import type { DtsResolver } from '../types';
+import type { DtsResolver } from '../types.ts';
 
 ////////////////////////////////////////////////////////////////////////////////
 
