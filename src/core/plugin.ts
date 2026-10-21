@@ -1,7 +1,7 @@
 import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { cpus } from 'node:os';
-import { dirname, basename, relative } from 'node:path';
+import { dirname, relative } from 'node:path';
 
 import ts from '@typescript/typescript6';
 import {
@@ -929,7 +929,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 							compilerOptions: compilerOptionsForRollup,
 							outDir,
 							entryPath: filePath,
-							fileName: basename(filePath),
+							fileName: relative(outDir, filePath),
 							libFolder: getTsLibFolder(),
 							rollupConfig,
 							rollupOptions,

@@ -71,6 +71,35 @@ async function expectNoFile(path: string): Promise<void> {
 	await expect(access(path)).rejects.toMatchObject({ code: 'ENOENT' });
 }
 
+async function expectConsumerTypecheck(
+	root: string,
+	content: string,
+): Promise<void> {
+	const consumerPath = resolve(root, 'consumer.ts');
+	await writeFile(consumerPath, content, 'utf8');
+	const consumerOptions: ts.CompilerOptions = {
+		module: ts.ModuleKind.ESNext,
+		moduleResolution: ts.ModuleResolutionKind.Bundler,
+		target: ts.ScriptTarget.ESNext,
+		strict: true,
+		noEmit: true,
+		skipLibCheck: false,
+		types: [],
+	};
+	const consumerHost = ts.createCompilerHost(consumerOptions);
+	const consumerProgram = ts.createProgram({
+		rootNames: [consumerPath],
+		options: consumerOptions,
+		host: consumerHost,
+	});
+	expect(
+		ts.formatDiagnostics(
+			ts.getPreEmitDiagnostics(consumerProgram),
+			consumerHost,
+		),
+	).toBe('');
+}
+
 async function waitFor(
 	predicate: () => Promise<boolean>,
 	timeoutMs = 10000,
@@ -392,6 +421,68 @@ describe('fixture integration', () => {
 	});
 
 	it(
+		'rolls up a nested package types entry and preserves its path in secondary outDirs',
+		async () => {
+			let emitted: ReadonlyMap<string, string> | undefined;
+			const root = await runFixtureBuild(
+				'insert-types-entry',
+				(fixtureRoot) => ({
+					build: {
+						lib: {
+							entry: resolve(fixtureRoot, 'src/index.ts'),
+							name: 'NestedTypesRollupFixture',
+							fileName: 'main',
+						},
+					},
+					plugins: [
+						dtsPlugin({
+							declarationOnly: true,
+							rollupTypes: true,
+							outDir: ['dist', 'nested/dist-secondary'],
+							afterBuild(emittedFiles) {
+								emitted = emittedFiles;
+							},
+						}),
+					],
+				}),
+			);
+
+			const bundledDts = resolve(root, 'dist/types/entry.d.ts');
+			const bundledContent = await readFile(bundledDts, 'utf8');
+			expect(bundledContent).toContain('export declare const namedValue = 7;');
+			expect(bundledContent).toContain(
+				'declare function createValue(): number;',
+			);
+			expect(bundledContent).toContain('export default createValue;');
+			expect(bundledContent).not.toMatch(/\bfrom\s+['"]\./);
+			expect(Array.from(emitted?.keys() ?? [])).toEqual([bundledDts]);
+			expect(emitted?.get(bundledDts)).toBe(bundledContent);
+
+			for (const outDir of ['dist', 'nested/dist-secondary']) {
+				expect(
+					await readFile(resolve(root, outDir, 'types/entry.d.ts'), 'utf8'),
+				).toBe(bundledContent);
+				await expectNoFile(resolve(root, outDir, 'index.d.ts'));
+				await expectNoFile(resolve(root, outDir, 'entry.d.ts'));
+			}
+
+			await expectConsumerTypecheck(
+				root,
+				[
+					"import createValue, { namedValue } from '.';",
+					"import createSecondaryValue, { namedValue as secondaryNamedValue } from './nested/dist-secondary/types/entry';",
+					'const value: number = createValue();',
+					'const literal: 7 = namedValue;',
+					'const secondaryValue: number = createSecondaryValue();',
+					'const secondaryLiteral: 7 = secondaryNamedValue;',
+					'export { value, literal, secondaryValue, secondaryLiteral };',
+				].join('\n'),
+			);
+		},
+		rollupIntegrationTimeoutMs,
+	);
+
+	it(
 		'rolls up declarations for multiple entries and cleans shared intermediates',
 		async () => {
 			const root = await runFixtureBuild(
@@ -431,6 +522,70 @@ describe('fixture integration', () => {
 			expect(indexContent).toContain('SharedShape');
 			expect(extraContent).toContain('export declare function buildExtra');
 			expect(extraContent).toContain('SharedShape');
+		},
+		rollupIntegrationTimeoutMs,
+	);
+
+	it(
+		'rolls up nested multi-entry declarations in place and tracks the exact bundle paths',
+		async () => {
+			let emitted: ReadonlyMap<string, string> | undefined;
+			const root = await runFixtureBuild(
+				'multi-entry-rollup',
+				(fixtureRoot) => ({
+					build: {
+						lib: {
+							entry: {
+								'nested/index': resolve(fixtureRoot, 'src/index.ts'),
+								'nested/extra': resolve(fixtureRoot, 'src/extra.ts'),
+							},
+							name: 'NestedMultiEntryRollupFixture',
+							fileName: 'index',
+						},
+					},
+					plugins: [
+						dtsPlugin({
+							declarationOnly: true,
+							rollupTypes: true,
+							afterBuild(emittedFiles) {
+								emitted = emittedFiles;
+							},
+						}),
+					],
+				}),
+			);
+
+			const indexDts = resolve(root, 'dist/nested/index.d.ts');
+			const extraDts = resolve(root, 'dist/nested/extra.d.ts');
+			const indexContent = await readFile(indexDts, 'utf8');
+			const extraContent = await readFile(extraDts, 'utf8');
+			expect(indexContent).toContain('export declare const primaryLabel');
+			expect(indexContent).toContain('export declare interface SharedShape');
+			expect(extraContent).toContain('export declare function buildExtra');
+			expect(extraContent).toContain('interface SharedShape');
+			expect(indexContent).not.toMatch(/\bfrom\s+['"]\./);
+			expect(extraContent).not.toMatch(/\bfrom\s+['"]\./);
+			expect(Array.from(emitted?.keys() ?? []).sort()).toEqual([
+				extraDts,
+				indexDts,
+			]);
+			expect(emitted?.get(indexDts)).toBe(indexContent);
+			expect(emitted?.get(extraDts)).toBe(extraContent);
+			for (const fileName of ['index.d.ts', 'extra.d.ts', 'shared.d.ts']) {
+				await expectNoFile(resolve(root, 'dist', fileName));
+			}
+
+			await expectConsumerTypecheck(
+				root,
+				[
+					"import { primaryLabel, type SharedShape } from './dist/nested/index';",
+					"import { buildExtra } from './dist/nested/extra';",
+					'const shape: SharedShape = buildExtra();',
+					'const label: string = primaryLabel;',
+					'const enabled: boolean = shape.enabled;',
+					'export { shape, label, enabled };',
+				].join('\n'),
+			);
 		},
 		rollupIntegrationTimeoutMs,
 	);
