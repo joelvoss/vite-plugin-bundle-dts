@@ -224,6 +224,67 @@ describe('fixture integration', () => {
 		expect(jsonContent).toContain('"label": "fixture"');
 	});
 
+	it.each(['', 'type '])(
+		'emits consumer-valid declarations for multiple %sdefault imports',
+		async (importKind) => {
+			const root = await createFixtureWorkspace('hooks-basic');
+			await writeFile(
+				resolve(root, 'src/index.ts'),
+				[
+					`import ${importKind}First from './types';`,
+					`import ${importKind}Second from './types';`,
+					'export type Both = [First, Second];',
+				].join('\n'),
+				'utf8',
+			);
+			await writeFile(
+				resolve(root, 'src/types.ts'),
+				'export default interface Shape { label: string; }\n',
+				'utf8',
+			);
+
+			const compilerDiagnostics: ts.Diagnostic[] = [];
+			await build({
+				configFile: false,
+				root,
+				logLevel: 'silent',
+				build: {
+					lib: {
+						entry: resolve(root, 'src/index.ts'),
+						name: 'MultipleDefaultImportsFixture',
+						fileName: 'index',
+					},
+				},
+				plugins: [
+					dtsPlugin({
+						declarationOnly: true,
+						afterDiagnostic(diagnostics) {
+							compilerDiagnostics.push(...diagnostics);
+						},
+					}),
+				],
+			});
+			expect(compilerDiagnostics).toEqual([]);
+
+			await expectConsumerTypecheck(
+				root,
+				[
+					"import type { Both } from './dist/index';",
+					"const both: Both = [{ label: 'first' }, { label: 'second' }];",
+					'const firstLabel: string = both[0].label;',
+					'const secondLabel: string = both[1].label;',
+					'export { both, firstLabel, secondLabel };',
+				].join('\n'),
+			);
+
+			const content = await readFile(resolve(root, 'dist/index.d.ts'), 'utf8');
+			expect(content).toContain(
+				"import { default as First, default as Second } from './types';",
+			);
+			expect(content).toContain('export type Both = [First, Second];');
+		},
+	);
+
 	it('builds a multi-entry library and emits declarations for each entry', async () => {
 		const root = await runFixtureBuild('multi-entry', (fixtureRoot) => ({
 			build: {

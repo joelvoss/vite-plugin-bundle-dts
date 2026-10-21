@@ -71,9 +71,11 @@ export function transformDeclarationContent(
 				const importSet = importMap.get(libName) ?? new Set<string>();
 				importMap.set(libName, importSet);
 
-				if (node.importClause.name && !usedDefault.has(libName)) {
+				if (node.importClause.name) {
 					const usedType = node.importClause.name.escapedText.toString();
-					usedDefault.set(libName, usedType);
+					if (!usedDefault.has(libName)) {
+						usedDefault.set(libName, usedType);
+					}
 					importSet.add(`default as ${usedType}`);
 				}
 

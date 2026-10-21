@@ -25,6 +25,123 @@ describe('transformDeclarationContent', () => {
 		expect(result.content).toContain('export type Example = Foo;');
 	});
 
+	it.each(['', 'type '])(
+		'preserves distinct local bindings from multiple %sdefault imports',
+		(importKind) => {
+			const result = transformDeclarationContent({
+				filePath: '/repo/src/feature.d.ts',
+				content: [
+					`import ${importKind}First from './types';`,
+					`import ${importKind}Second from './types';`,
+					'export type Both = [First, Second];',
+				].join('\n'),
+				aliases: [],
+				aliasesExclude: [],
+				staticImport: false,
+				clearPureImport: true,
+			});
+
+			expect(result.content).toBe(
+				[
+					"import { default as First, default as Second } from './types';",
+					'export type Both = [First, Second];',
+				].join('\n'),
+			);
+		},
+	);
+
+	it('preserves multiple defaults combined with named imports', () => {
+		const result = transformDeclarationContent({
+			filePath: '/repo/src/feature.d.ts',
+			content: [
+				"import First, { Named } from './types';",
+				"import Second, { Named as Alias } from './types';",
+				'export type Both = [First, Second, Named, Alias];',
+			].join('\n'),
+			aliases: [],
+			aliasesExclude: [],
+			staticImport: false,
+			clearPureImport: true,
+		});
+
+		expect(result.content).toBe(
+			[
+				"import { default as First, Named, default as Second, Named as Alias } from './types';",
+				'export type Both = [First, Second, Named, Alias];',
+			].join('\n'),
+		);
+	});
+
+	it('deduplicates repeated default bindings without dropping distinct ones', () => {
+		const result = transformDeclarationContent({
+			filePath: '/repo/src/feature.d.ts',
+			content: [
+				"import First from './types';",
+				"import First from './types';",
+				"import Second from './types';",
+				"import Second from './types';",
+				'export type Both = [First, Second];',
+			].join('\n'),
+			aliases: [],
+			aliasesExclude: [],
+			staticImport: false,
+			clearPureImport: true,
+		});
+
+		expect(result.content).toBe(
+			[
+				"import { default as First, default as Second } from './types';",
+				'export type Both = [First, Second];',
+			].join('\n'),
+		);
+	});
+
+	it('reuses the first default binding for static import types and preserves others', () => {
+		const result = transformDeclarationContent({
+			filePath: '/repo/src/feature.d.ts',
+			content: [
+				"import First from './types';",
+				"import Second from './types';",
+				"export type Both = [First, Second, import('./types').default, import('./types').default];",
+			].join('\n'),
+			aliases: [],
+			aliasesExclude: [],
+			staticImport: true,
+			clearPureImport: true,
+		});
+
+		expect(result.content).toBe(
+			[
+				"import { default as First, default as Second } from './types';",
+				'export type Both = [First, Second, First, First];',
+			].join('\n'),
+		);
+	});
+
+	it('preserves later default bindings without replacing a generated canonical binding', () => {
+		const result = transformDeclarationContent({
+			filePath: '/repo/src/feature.d.ts',
+			content: [
+				"export type Initial = import('./types').default;",
+				"import First from './types';",
+				"import Second from './types';",
+				"export type Both = [First, Second, import('./types').default];",
+			].join('\n'),
+			aliases: [],
+			aliasesExclude: [],
+			staticImport: true,
+			clearPureImport: true,
+		});
+
+		expect(result.content).toBe(
+			[
+				"import { default as __DTS_DEFAULT_0__, default as First, default as Second } from './types';",
+				'export type Initial = __DTS_DEFAULT_0__;',
+				'export type Both = [First, Second, __DTS_DEFAULT_0__];',
+			].join('\n'),
+		);
+	});
+
 	it('removes pure imports when requested', () => {
 		const result = transformDeclarationContent({
 			filePath: '/repo/src/feature.d.ts',
