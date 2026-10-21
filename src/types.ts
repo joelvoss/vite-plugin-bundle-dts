@@ -1,4 +1,4 @@
-import type ts from 'typescript';
+import type ts from '@typescript/typescript6';
 
 export type MaybePromise<T> = T | Promise<T>;
 

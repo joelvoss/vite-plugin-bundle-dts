@@ -3,7 +3,7 @@ import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { cpus } from 'node:os';
 import { dirname, basename, relative } from 'node:path';
 
-import ts from 'typescript';
+import ts from '@typescript/typescript6';
 import {
 	createLogger,
 	type Logger,
@@ -922,7 +922,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 							outDir,
 							entryPath: filePath,
 							fileName: basename(filePath),
-							libFolder: getTsLibFolder(publicRoot),
+							libFolder: getTsLibFolder(),
 							rollupConfig,
 							rollupOptions,
 						});

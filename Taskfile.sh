@@ -29,7 +29,8 @@ lint() {
 
 typecheck() {
   echo "Running tsc..."
-  tsc --noEmit
+  # NOTE: Use typescript 7 for type checking
+  node ./node_modules/typescript/bin/tsc --noEmit
 }
 
 test() {

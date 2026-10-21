@@ -1,4 +1,14 @@
-import { access, cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+	access,
+	cp,
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	symlink,
+	writeFile,
+} from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +20,7 @@ import dtsPlugin from '../src';
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const fixturesDir = resolve(currentDir, 'fixtures');
+const testRequire = createRequire(import.meta.url);
 const rollupIntegrationTimeoutMs = 15000;
 const tempRoots: string[] = [];
 const watchers: Array<{ close(): Promise<void> | void }> = [];
@@ -245,6 +256,110 @@ describe('fixture integration', () => {
 			expect(bundledContent).toContain('export declare interface MessageShape');
 		},
 		rollupIntegrationTimeoutMs,
+	);
+
+	it(
+		'rolls up declarations with TypeScript 7 using the compatibility compiler',
+		async () => {
+			const { version } = JSON.parse(
+				await readFile(testRequire.resolve('typescript/package.json'), 'utf8'),
+			) as { version: string };
+			expect(version).toMatch(/^7\./);
+
+			const root = await runFixtureBuild('rollup-types', (fixtureRoot) => ({
+				build: {
+					lib: {
+						entry: resolve(fixtureRoot, 'src/index.ts'),
+						name: 'TypeScript7CompatibilityFixture',
+						fileName: 'index',
+					},
+				},
+				plugins: [
+					dtsPlugin({
+						declarationOnly: true,
+						rollupTypes: true,
+					}),
+				],
+			}));
+
+			const bundledDts = resolve(root, 'dist/index.d.ts');
+			await expectFile(bundledDts);
+
+			const bundledContent = await readFile(bundledDts, 'utf8');
+			expect(bundledContent).toContain('export declare function createMessage');
+			expect(bundledContent).toContain('export declare interface MessageShape');
+			expect(bundledContent).toContain(
+				'Promise<ReadonlyArray<MessageShape>>',
+			);
+		},
+		rollupIntegrationTimeoutMs,
+	);
+
+	it(
+		'builds declarations with the packaged plugin and TypeScript 7',
+		async () => {
+			const packageRoot = await mkdtemp(
+				resolve(tmpdir(), 'vite-plugin-bundle-dts-package-'),
+			);
+			tempRoots.push(packageRoot);
+			await cp(resolve(currentDir, '../package.json'), resolve(packageRoot, 'package.json'));
+			await symlink(
+				resolve(currentDir, '../node_modules'),
+				resolve(packageRoot, 'node_modules'),
+				'dir',
+			);
+
+			await build({
+				configFile: resolve(currentDir, '../vite.config.ts'),
+				root: resolve(currentDir, '..'),
+				logLevel: 'silent',
+				build: {
+					outDir: resolve(packageRoot, 'dist'),
+					emptyOutDir: true,
+				},
+			});
+
+			const consumerRoot = resolve(packageRoot, 'consumer');
+			const consumerNodeModules = resolve(consumerRoot, 'node_modules');
+			await mkdir(consumerNodeModules, { recursive: true });
+			await symlink(
+				packageRoot,
+				resolve(consumerNodeModules, 'vite-plugin-bundle-dts'),
+				'dir',
+			);
+			const consumerRequire = createRequire(resolve(consumerRoot, 'entry.cjs'));
+			const packagedPlugin = (
+				consumerRequire('vite-plugin-bundle-dts') as {
+					default: typeof dtsPlugin;
+				}
+			).default;
+
+			const root = await runFixtureBuild('rollup-types', (fixtureRoot) => ({
+				build: {
+					lib: {
+						entry: resolve(fixtureRoot, 'src/index.ts'),
+						name: 'PackagedPluginFixture',
+						fileName: 'index',
+					},
+				},
+				plugins: [
+					packagedPlugin({
+						declarationOnly: true,
+						rollupTypes: true,
+					}),
+				],
+			}));
+
+			const bundledContent = await readFile(
+				resolve(root, 'dist/index.d.ts'),
+				'utf8',
+			);
+			expect(bundledContent).toContain('export declare function createMessage');
+			expect(bundledContent).toContain(
+				'Promise<ReadonlyArray<MessageShape>>',
+			);
+		},
+		30000,
 	);
 
 	it('writes a custom package types shim when insertTypesEntry is enabled', async () => {

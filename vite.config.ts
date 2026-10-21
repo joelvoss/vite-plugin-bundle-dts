@@ -13,8 +13,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const externalPackages = [
 	'@microsoft/api-extractor',
+	'@typescript/typescript6',
 	'magic-string',
-	'typescript',
 	'vite',
 ];
 

@@ -1,1 +1,1 @@
-export { createMessage, type MessageShape } from './helper';
+export { createMessage, createMessages, type MessageShape } from './helper';
