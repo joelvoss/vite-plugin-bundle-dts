@@ -353,6 +353,19 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 				outDir: '.',
 				declarationDir: '.',
 			};
+			if (options.compilerOptions?.paths) {
+				// Plugin paths belong to its project root, even when the tsconfig
+				// supplies an inherited pathsBasePath or baseUrl.
+				compilerOptions.paths = Object.fromEntries(
+					Object.entries(options.compilerOptions.paths).map(([key, paths]) => [
+						key,
+						paths.map((path) =>
+							ensureAbsolute(resolveConfigDir(path, root), root),
+						),
+					]),
+				);
+				compilerOptions.pathsBasePath = root;
+			}
 
 			// TypeScript 6 changed how `commonSourceDirectory` is computed when
 			// `configFilePath` is present: it uses the tsconfig directory instead
@@ -383,18 +396,13 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 						];
 			}
 
-			const baseUrl = compilerOptions.paths ? process.cwd() : undefined;
+			const pathsBasePath =
+				compilerOptions.baseUrl ??
+				(compilerOptions.pathsBasePath as string | undefined) ??
+				root;
 			const paths = compilerOptions.paths;
-			if (pathsToAliases && baseUrl && paths) {
-				aliases.push(
-					...parseTsAliases(
-						ensureAbsolute(
-							resolveConfigDir(baseUrl, root),
-							configPath ? dirname(configPath) : root,
-						),
-						paths,
-					),
-				);
+			if (pathsToAliases && paths) {
+				aliases.push(...parseTsAliases(pathsBasePath, paths));
 			}
 
 			const computeGlobs = (

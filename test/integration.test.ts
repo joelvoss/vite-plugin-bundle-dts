@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import ts from '@typescript/typescript6';
 import { build, type InlineConfig } from 'vite';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -812,4 +813,211 @@ describe('filter integration', () => {
 			}
 		},
 	);
+});
+
+describe('tsconfig paths integration', () => {
+	const fixtures: Array<{
+		name: string;
+		tsconfigPath?: string;
+		config?: Record<string, unknown>;
+		parentConfig?: Record<string, unknown>;
+		pluginPaths?: Record<string, string[]>;
+		separatePluginRoot?: boolean;
+	}> = [
+		{
+			name: 'project root different from cwd',
+			tsconfigPath: 'tsconfig.json',
+			config: { paths: { '@/*': ['./src/*'] } },
+		},
+		{
+			name: 'plugin root different from Vite root',
+			tsconfigPath: 'tsconfig.json',
+			config: { paths: { '@/*': ['./src/*'] } },
+			separatePluginRoot: true,
+		},
+		{
+			name: 'nested tsconfigPath',
+			tsconfigPath: 'config/tsconfig.json',
+			config: { paths: { '@/*': ['../src/*'] } },
+		},
+		{
+			name: 'paths inherited from a parent tsconfig',
+			tsconfigPath: 'config/nested/tsconfig.json',
+			parentConfig: { paths: { '@/*': ['../src/*'] } },
+		},
+		{
+			name: 'parsed baseUrl instead of the paths defining directory',
+			tsconfigPath: 'config/tsconfig.json',
+			config: { baseUrl: '../src', paths: { '@/*': ['*'] } },
+		},
+		{
+			name: 'inherited baseUrl with paths defined in a child tsconfig',
+			tsconfigPath: 'config/nested/tsconfig.json',
+			config: { paths: { '@/*': ['*'] } },
+			parentConfig: { baseUrl: '../src' },
+		},
+		{
+			name: 'plugin paths overriding inherited paths',
+			tsconfigPath: 'config/nested/tsconfig.json',
+			parentConfig: { paths: { '@/*': ['../src/wrong/*'] } },
+			pluginPaths: { '@/*': ['./src/*'] },
+			separatePluginRoot: true,
+		},
+		{
+			name: 'plugin paths overriding inherited paths and baseUrl',
+			tsconfigPath: 'config/nested/tsconfig.json',
+			parentConfig: {
+				baseUrl: '../src/wrong',
+				paths: { '@/*': ['*'] },
+			},
+			pluginPaths: { '@/*': ['./src/*'] },
+		},
+		{
+			name: 'plugin paths without a tsconfig',
+			pluginPaths: { '@/*': ['./src/*'] },
+		},
+	];
+
+	it.each(fixtures)('resolves $name without Vite aliases', async (fixture) => {
+		const workspace = await createFixtureWorkspace('hooks-basic');
+		const root = fixture.separatePluginRoot
+			? resolve(workspace, 'project')
+			: workspace;
+		expect(root).not.toBe(process.cwd());
+		await mkdir(resolve(root, 'src/wrong'), { recursive: true });
+		await writeFile(
+			resolve(root, 'src/index.ts'),
+			[
+				"export type { Example } from '@/types';",
+				"export const example = { label: 'fixture' } satisfies import('@/types').Example;",
+			].join('\n'),
+			'utf8',
+		);
+		await writeFile(
+			resolve(root, 'src/types.ts'),
+			'export interface Example { label: string; }\n',
+			'utf8',
+		);
+		await writeFile(
+			resolve(root, 'src/wrong/types.ts'),
+			'export interface Example { label: number; }\n',
+			'utf8',
+		);
+
+		const configPath = fixture.tsconfigPath
+			? resolve(root, fixture.tsconfigPath)
+			: undefined;
+		if (configPath) {
+			await mkdir(dirname(configPath), { recursive: true });
+			await writeFile(
+				configPath,
+				JSON.stringify({
+					extends: fixture.parentConfig ? '../tsconfig.base.json' : undefined,
+					compilerOptions: {
+						module: 'ESNext',
+						moduleResolution: 'Bundler',
+						strict: true,
+						...fixture.config,
+					},
+					include: [resolve(root, 'src')],
+				}),
+				'utf8',
+			);
+			if (fixture.parentConfig) {
+				await writeFile(
+					resolve(root, 'config/tsconfig.base.json'),
+					JSON.stringify({ compilerOptions: fixture.parentConfig }),
+					'utf8',
+				);
+			}
+		} else {
+			await rm(resolve(root, 'tsconfig.json'));
+		}
+		expect(Boolean(ts.findConfigFile(root, ts.sys.fileExists))).toBe(
+			Boolean(configPath),
+		);
+
+		const compilerDiagnostics: ts.Diagnostic[] = [];
+		await build({
+			configFile: false,
+			root: workspace,
+			logLevel: 'silent',
+			build: {
+				lib: {
+					entry: configPath
+						? resolve(root, 'src/index.ts')
+						: {
+								index: resolve(root, 'src/index.ts'),
+								types: resolve(root, 'src/types.ts'),
+							},
+					name: 'TsconfigPathsFixture',
+					fileName: 'index',
+				},
+			},
+			plugins: [
+				dtsPlugin({
+					root: fixture.separatePluginRoot ? root : undefined,
+					tsconfigPath: fixture.tsconfigPath,
+					outDir: 'dist',
+					declarationOnly: true,
+					compilerOptions: {
+						module: ts.ModuleKind.ESNext,
+						moduleResolution: ts.ModuleResolutionKind.Bundler,
+						strict: true,
+						types: [],
+						...(fixture.pluginPaths ? { paths: fixture.pluginPaths } : {}),
+					},
+					afterDiagnostic(diagnostics) {
+						compilerDiagnostics.push(...diagnostics);
+					},
+				}),
+			],
+		});
+
+		expect(
+			compilerDiagnostics.map((diagnostic) =>
+				ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'),
+			),
+		).toEqual([]);
+		const indexContent = await readFile(
+			resolve(root, 'dist/index.d.ts'),
+			'utf8',
+		);
+		expect(indexContent).toContain("export type { Example } from './types';");
+		await expectFile(resolve(root, 'dist/types.d.ts'));
+
+		const consumerPath = resolve(root, 'consumer.ts');
+		await writeFile(
+			consumerPath,
+			[
+				"import type { Example } from './dist/index';",
+				"import { example } from './dist/index';",
+				"const value: Example = { label: 'consumer' };",
+				'const label: string = example.label;',
+				'export { value, label };',
+			].join('\n'),
+			'utf8',
+		);
+		const consumerOptions: ts.CompilerOptions = {
+			module: ts.ModuleKind.ESNext,
+			moduleResolution: ts.ModuleResolutionKind.Bundler,
+			target: ts.ScriptTarget.ESNext,
+			strict: true,
+			noEmit: true,
+			skipLibCheck: false,
+			types: [],
+		};
+		const consumerHost = ts.createCompilerHost(consumerOptions);
+		const consumerProgram = ts.createProgram({
+			rootNames: [consumerPath],
+			options: consumerOptions,
+			host: consumerHost,
+		});
+		expect(
+			ts.formatDiagnostics(
+				ts.getPreEmitDiagnostics(consumerProgram),
+				consumerHost,
+			),
+		).toBe('');
+	});
 });
