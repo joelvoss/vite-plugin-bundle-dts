@@ -656,3 +656,45 @@ describe('multiple outDirs', () => {
 		expect(secondaryMapContent.sources).not.toEqual(primaryMapContent.sources);
 	});
 });
+
+describe('filter integration', () => {
+	it.each([false, true])(
+		'honors single-star includes with test-file exclusion set to %s',
+		async (excludeTestFiles) => {
+			const root = await createFixtureWorkspace('hooks-basic');
+			await writeFile(
+				resolve(root, 'src/index.test.ts'),
+				'export const testValue = 42;\n',
+				'utf8',
+			);
+
+			await build({
+				configFile: false,
+				root,
+				logLevel: 'silent',
+				build: {
+					lib: {
+						entry: resolve(root, 'src/index.ts'),
+						name: 'SingleStarFilterFixture',
+						fileName: 'index',
+					},
+				},
+				plugins: [
+					dtsPlugin({
+						declarationOnly: true,
+						include: ['src/*.ts'],
+						exclude: excludeTestFiles ? ['src/*.test.ts'] : undefined,
+					}),
+				],
+			});
+
+			await expectFile(resolve(root, 'dist/index.d.ts'));
+			const testDeclaration = resolve(root, 'dist/index.test.d.ts');
+			if (excludeTestFiles) {
+				await expectNoFile(testDeclaration);
+			} else {
+				await expectFile(testDeclaration);
+			}
+		},
+	);
+});
