@@ -43,6 +43,9 @@ export function transformDeclarationContent(
 	// block.
 	const importMap = new Map<string, Set<string>>();
 	const usedDefault = new Map<string, string>();
+	const usedNamed = new Map<string, Map<string, string>>();
+	const reservedIdentifiers = new Set<string>();
+	const shadowedIdentifiers = new Set<string>();
 	const declareModules: string[] = [];
 
 	const toLibName = (origin: string): string =>
@@ -50,6 +53,78 @@ export function transformDeclarationContent(
 
 	let generatedDefaultIndex = 0;
 	let importCount = 0;
+
+	if (options.staticImport) {
+		// Reserve names before rewriting, including identifiers in nested scopes
+		// and declarations/imports that appear after an import type.
+		walkSourceFile(ast, (node, parent) => {
+			if (ts.isImportDeclaration(node) && parent === ast) {
+				if (node.importClause?.name) {
+					reservedIdentifiers.add(node.importClause.name.text);
+				}
+				const bindings = node.importClause?.namedBindings;
+				if (bindings) {
+					if (ts.isNamespaceImport(bindings)) {
+						reservedIdentifiers.add(bindings.name.text);
+					} else {
+						for (const element of bindings.elements) {
+							reservedIdentifiers.add(element.name.text);
+						}
+					}
+				}
+				return false;
+			}
+			if (
+				ts.isIdentifier(node) &&
+				!(ts.isImportTypeNode(parent) && parent.qualifier === node)
+			) {
+				reservedIdentifiers.add(node.text);
+				// Conservatively avoid reusing any import binding whose name is
+				// also declared elsewhere, so it stays valid at every use site.
+				if ('name' in parent && parent.name === node) {
+					shadowedIdentifiers.add(node.text);
+				}
+			}
+		});
+
+		for (const statement of ast.statements) {
+			if (
+				ts.isImportDeclaration(statement) &&
+				ts.isStringLiteral(statement.moduleSpecifier) &&
+				statement.importClause?.namedBindings &&
+				ts.isNamedImports(statement.importClause.namedBindings)
+			) {
+				const libName = toLibName(statement.moduleSpecifier.text);
+				const bindings = usedNamed.get(libName) ?? new Map<string, string>();
+				usedNamed.set(libName, bindings);
+				for (const element of statement.importClause.namedBindings.elements) {
+					const name = (element.propertyName ?? element.name).text;
+					if (
+						!bindings.has(name) &&
+						!shadowedIdentifiers.has(element.name.text)
+					) {
+						bindings.set(name, element.name.text);
+					}
+				}
+			}
+		}
+	}
+
+	const allocateName = (name: string): string => {
+		let localName: string;
+		let index = 0;
+		do {
+			localName =
+				name === 'default'
+					? `__DTS_DEFAULT_${generatedDefaultIndex++}__`
+					: index === 0
+						? name
+						: `${name}_${index}`;
+			index += 1;
+		} while (reservedIdentifiers.has(localName));
+		reservedIdentifiers.add(localName);
+		return localName;
+	};
 
 	walkSourceFile(ast, (node, parent) => {
 		if (ts.isImportDeclaration(node)) {
@@ -72,8 +147,11 @@ export function transformDeclarationContent(
 				importMap.set(libName, importSet);
 
 				if (node.importClause.name) {
-					const usedType = node.importClause.name.escapedText.toString();
-					if (!usedDefault.has(libName)) {
+					const usedType = node.importClause.name.text;
+					if (
+						!usedDefault.has(libName) &&
+						!shadowedIdentifiers.has(usedType)
+					) {
 						usedDefault.set(libName, usedType);
 					}
 					importSet.add(`default as ${usedType}`);
@@ -86,10 +164,10 @@ export function transformDeclarationContent(
 					for (const element of node.importClause.namedBindings.elements) {
 						if (element.propertyName) {
 							importSet.add(
-								`${element.propertyName.getText(ast)} as ${element.name.escapedText.toString()}`,
+								`${element.propertyName.getText(ast)} as ${element.name.text}`,
 							);
 						} else {
-							importSet.add(element.name.escapedText.toString());
+							importSet.add(element.name.text);
 						}
 					}
 				}
@@ -123,17 +201,21 @@ export function transformDeclarationContent(
 			// predictable.
 			const importSet = importMap.get(libName) ?? new Set<string>();
 			importMap.set(libName, importSet);
-			let usedType = node.qualifier.escapedText.toString();
+			const name = node.qualifier.text;
+			let usedType: string;
 
-			if (usedType === 'default') {
-				usedType =
-					usedDefault.get(libName) ??
-					`__DTS_DEFAULT_${generatedDefaultIndex++}__`;
+			if (name === 'default') {
+				usedType = usedDefault.get(libName) ?? allocateName(name);
 				usedDefault.set(libName, usedType);
-				importSet.add(`default as ${usedType}`);
-				source.update(node.qualifier.pos, node.qualifier.end, usedType);
 			} else {
-				importSet.add(usedType);
+				const bindings = usedNamed.get(libName) ?? new Map<string, string>();
+				usedNamed.set(libName, bindings);
+				usedType = bindings.get(name) ?? allocateName(name);
+				bindings.set(name, usedType);
+			}
+			importSet.add(name === usedType ? name : `${name} as ${usedType}`);
+			if (usedType !== name) {
+				source.update(node.qualifier.pos, node.qualifier.end, usedType);
 			}
 
 			if (

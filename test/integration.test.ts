@@ -285,6 +285,119 @@ describe('fixture integration', () => {
 		},
 	);
 
+	it.each([false, true])(
+		'keeps static import bindings distinct and consumer-valid with rollupTypes=%s',
+		async (rollupTypes) => {
+			const root = await createFixtureWorkspace('hooks-basic');
+			await writeFile(
+				resolve(root, 'src/index.ts'),
+				[
+					"export type Both = [import('./one').Foo, import('./two').Foo, import('./one').Foo, import('./two').Foo];",
+					"export type Aliased = [import('./one').Aliased, import('./one').Aliased];",
+					"export type Defaults = [import('./one').DefaultConflict, import('./one').default, import('./one').default];",
+					"export type NamespaceType = [import('./one').NamespaceConflict, NamespaceConflict.Other];",
+					"export type Local = [import('./one').LocalConflict, LocalConflict];",
+					"export type Scoped<ScopedAlias, ExistingDefault, __DTS_DEFAULT_1__> = [import('./one').Scoped, import('./two').default, ScopedAlias, ExistingDefault, __DTS_DEFAULT_1__];",
+					"import type { Aliased as ExistingAlias, Scoped as ScopedAlias } from './one';",
+					"import type DefaultConflict from './two';",
+					"import type ExistingDefault from './two';",
+					"import type * as NamespaceConflict from './two';",
+					'export interface Foo_1 { later: true; }',
+					'export interface LocalConflict { local: true; }',
+					'export interface __DTS_DEFAULT_0__ { reserved: true; }',
+					'export type Explicit = [ExistingAlias, ScopedAlias, DefaultConflict, ExistingDefault];',
+				].join('\n'),
+				'utf8',
+			);
+			await writeFile(
+				resolve(root, 'src/one.ts'),
+				[
+					"export interface Foo { kind: 'one'; }",
+					"export interface Aliased { alias: 'one'; }",
+					"export interface DefaultConflict { named: 'one'; }",
+					"export interface NamespaceConflict { namespace: 'one'; }",
+					"export interface LocalConflict { imported: 'one'; }",
+					"export interface Scoped { scoped: 'one'; }",
+					"export default interface Shape { default: 'one'; }",
+				].join('\n'),
+				'utf8',
+			);
+			await writeFile(
+				resolve(root, 'src/two.ts'),
+				[
+					"export interface Foo { kind: 'two'; }",
+					"export interface Other { other: 'two'; }",
+					"export default interface Shape { default: 'two'; }",
+				].join('\n'),
+				'utf8',
+			);
+
+			const compilerDiagnostics: ts.Diagnostic[] = [];
+			await build({
+				configFile: false,
+				root,
+				logLevel: 'silent',
+				build: {
+					lib: {
+						entry: resolve(root, 'src/index.ts'),
+						name: 'StaticImportBindingsFixture',
+						fileName: 'index',
+					},
+				},
+				plugins: [
+					dtsPlugin({
+						declarationOnly: true,
+						staticImport: true,
+						rollupTypes,
+						afterDiagnostic(diagnostics) {
+							compilerDiagnostics.push(...diagnostics);
+						},
+					}),
+				],
+			});
+			expect(compilerDiagnostics).toEqual([]);
+
+			await expectConsumerTypecheck(
+				root,
+				[
+					"import type { Both, Aliased, Defaults, NamespaceType, Local, Scoped, Explicit } from './dist/index';",
+					"const both: Both = [{ kind: 'one' }, { kind: 'two' }, { kind: 'one' }, { kind: 'two' }];",
+					"const firstKind: 'one' = both[0].kind;",
+					"const secondKind: 'two' = both[1].kind;",
+					"const aliased: Aliased = [{ alias: 'one' }, { alias: 'one' }];",
+					"const defaults: Defaults = [{ named: 'one' }, { default: 'one' }, { default: 'one' }];",
+					"const namespaceType: NamespaceType = [{ namespace: 'one' }, { other: 'two' }];",
+					"const local: Local = [{ imported: 'one' }, { local: true }];",
+					"const scoped: Scoped<'alias', 'default', 'reserved'> = [{ scoped: 'one' }, { default: 'two' }, 'alias', 'default', 'reserved'];",
+					"const explicit: Explicit = [{ alias: 'one' }, { scoped: 'one' }, { default: 'two' }, { default: 'two' }];",
+					'export { both, firstKind, secondKind, aliased, defaults, namespaceType, local, scoped, explicit };',
+				].join('\n'),
+			);
+
+			if (!rollupTypes) {
+				const content = await readFile(
+					resolve(root, 'dist/index.d.ts'),
+					'utf8',
+				);
+				expect(content).toContain(
+					'export type Both = [ Foo, Foo_2, Foo, Foo_2];',
+				);
+				expect(content).toContain(
+					'export type Aliased = [ ExistingAlias, ExistingAlias];',
+				);
+				expect(content).toContain('default as __DTS_DEFAULT_2__');
+				expect(content).toContain(
+					'export type Defaults = [ DefaultConflict_1, __DTS_DEFAULT_2__, __DTS_DEFAULT_2__];',
+				);
+				expect(content).toContain('Scoped as Scoped_1');
+				expect(content).toContain(
+					'export type Scoped<ScopedAlias, ExistingDefault, __DTS_DEFAULT_1__> = [ Scoped_1, __DTS_DEFAULT_3__, ScopedAlias, ExistingDefault, __DTS_DEFAULT_1__];',
+				);
+			}
+		},
+		rollupIntegrationTimeoutMs,
+	);
+
 	it('builds a multi-entry library and emits declarations for each entry', async () => {
 		const root = await runFixtureBuild('multi-entry', (fixtureRoot) => ({
 			build: {
