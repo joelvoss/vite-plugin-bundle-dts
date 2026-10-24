@@ -11,12 +11,7 @@ import { cpus } from 'node:os';
 import { dirname, isAbsolute, relative } from 'node:path';
 
 import ts from '@typescript/typescript6';
-import {
-	createLogger,
-	type Logger,
-	type Plugin,
-	type ResolvedConfig,
-} from 'vite';
+import { createLogger, type Logger, type Plugin } from 'vite';
 
 import { createJsonResolver } from '../resolvers/json.ts';
 import type { BundleDtsOptions, DtsResolver, PathAlias } from '../types.ts';
@@ -213,7 +208,6 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 	let filter: ReturnType<typeof createFilter> | undefined;
 	let bundled = false;
 	let timeRecord = 0;
-	let viteConfig: ResolvedConfig | undefined;
 	let realRootPrefix = '';
 	let rootPrefix = '';
 
@@ -226,6 +220,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 	// These collections track the declaration graph across the build lifecycle.
 	const rootFiles = new Set<string>();
 	const outputFiles = new Map<string, string>();
+	const sourceMapPaths = new Map<string, string>();
 	const transformedFiles = new Set<string>();
 	const diagnostics: ts.Diagnostic[] = [];
 	const rollupConfig = {
@@ -244,8 +239,19 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 		return normalizedId;
 	}
 
-	function setOutputFile(filePath: string, content: string): void {
+	function setOutputFile(
+		filePath: string,
+		content: string,
+		originalPath?: string,
+	): void {
 		outputFiles.set(filePath, content);
+		if (filePath.endsWith('.map') && originalPath) {
+			// Map coordinates belong to the compiler or resolver output location,
+			// not the synthetic source-tree key used to lay out declarations.
+			sourceMapPaths.set(filePath, originalPath);
+		} else {
+			sourceMapPaths.delete(filePath);
+		}
 	}
 
 	function parseViteAliases(aliasOptions: unknown): void {
@@ -295,7 +301,6 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			// Once Vite resolves the full config we can lock in output directories,
 			// entry names, and the logger instance that should be used for
 			// diagnostics.
-			viteConfig = config;
 			logger = logLevel
 				? createLogger(logLevel, { allowClearScreen: config.clearScreen })
 				: config.logger;
@@ -356,6 +361,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			timeRecord = 0;
 			rootFiles.clear();
 			outputFiles.clear();
+			sourceMapPaths.clear();
 			transformedFiles.clear();
 			diagnostics.length = 0;
 			if (!realRootPrefix) {
@@ -594,6 +600,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 							relative(outDir, ensureAbsolute(path, outDir)),
 						),
 						content,
+						ensureAbsolute(path, outDir),
 					);
 				}
 			} else {
@@ -608,7 +615,11 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 								publicRoot,
 								relative(outDir, ensureAbsolute(name, outDir)),
 							);
-							setOutputFile(key, text);
+							setOutputFile(
+								key,
+								text,
+								ensureAbsolute(name, host!.getCurrentDirectory()),
+							);
 						},
 						undefined,
 						true,
@@ -708,6 +719,20 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 				}
 
 				const dir = dirname(resolvedPath);
+				if (filePath.endsWith('.map') && dir !== dirname(filePath)) {
+					const updated = editSourceMapDir(
+						resolvedContent,
+						dirname(filePath),
+						dir,
+					);
+					if (updated === false) {
+						logger.warn(
+							`${logPrefix} Processing source map fail: ${resolvedPath}`,
+						);
+					} else if (typeof updated === 'string') {
+						resolvedContent = updated;
+					}
+				}
 				await mkdir(dir, { recursive: true });
 				await writeFile(resolvedPath, resolvedContent, 'utf8');
 				if (record) {
@@ -761,6 +786,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 								relative(outDir, ensureAbsolute(path, outDir)),
 							),
 							content,
+							ensureAbsolute(path, outDir),
 						);
 					}
 					transformedFiles.add(sourceFile.fileName);
@@ -776,6 +802,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 									relative(outDir, ensureAbsolute(name, outDir)),
 								),
 								text,
+								ensureAbsolute(name, host!.getCurrentDirectory()),
 							);
 						},
 						undefined,
@@ -838,26 +865,22 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 				cpus().length,
 				Array.from(mapFiles.entries()),
 				async ([filePath, content]) => {
-					const baseDir = dirname(filePath);
 					const outputPath = resolvePath(outDir, relative(entryRoot, filePath));
 					let nextContent = content;
 					try {
-						const sourceMap = JSON.parse(content) as {
-							sources: string[];
+						const updated = editSourceMapDir(
+							content,
+							dirname(sourceMapPaths.get(filePath) ?? outputPath),
+							dirname(outputPath),
+						);
+						if (updated === false) {
+							throw new Error('Invalid source map');
+						}
+						const sourceMap = JSON.parse(
+							typeof updated === 'string' ? updated : content,
+						) as {
 							mappings: string;
 						};
-						sourceMap.sources = sourceMap.sources.map((source) =>
-							normalizePath(
-								relative(
-									dirname(outputPath),
-									resolvePath(
-										viteConfig?.root ?? root,
-										relative(publicRoot, baseDir),
-										source,
-									),
-								),
-							),
-						);
 						if (prependMappings.has(outputPath)) {
 							sourceMap.mappings = `${prependMappings.get(outputPath)}${sourceMap.mappings}`;
 						}
@@ -1038,8 +1061,8 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 								if (writtenFile.endsWith('.map')) {
 									const updated = editSourceMapDir(
 										content,
-										outDir,
-										targetOutDir,
+										dirname(writtenFile),
+										dirname(targetPath),
 									);
 									if (updated === false) {
 										logger.warn(
