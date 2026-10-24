@@ -2056,7 +2056,15 @@ describe('multiple outDirs', () => {
 
 describe('declaration map source paths', () => {
 	it('emits raw compiler sources relative to the compiler map filename, not the project root', async () => {
-		const root = await createFixtureWorkspace('multi-outdir');
+		const workspace = await mkdtemp(
+			resolve(tmpdir(), 'vite-plugin-bundle-dts-compiler-cwd-'),
+		);
+		tempRoots.push(workspace);
+		const root = resolve(workspace, 'fixture');
+		// Unequal depths prevent the wrong root from accidentally reaching the source.
+		const compilerRoot = resolve(workspace, 'compiler/cwd');
+		await mkdir(compilerRoot, { recursive: true });
+		await cp(resolve(fixturesDir, 'multi-outdir'), root, { recursive: true });
 		const sourcePath = resolve(root, 'src/index.ts');
 		const compilerOptions: ts.CompilerOptions = {
 			module: ts.ModuleKind.ESNext,
@@ -2069,6 +2077,7 @@ describe('declaration map source paths', () => {
 			declarationDir: '.',
 		};
 		const host = ts.createCompilerHost(compilerOptions);
+		host.getCurrentDirectory = () => compilerRoot;
 		const program = ts.createProgram({
 			rootNames: [sourcePath],
 			options: compilerOptions,
@@ -2084,6 +2093,7 @@ describe('declaration map source paths', () => {
 		expect(maps.size).toBe(1);
 		const [name, content] = Array.from(maps.entries())[0];
 		const sourceMap = JSON.parse(content) as { sources: string[] };
+		expect(sourceMap.sources).toEqual(['../../fixture/src/index.ts']);
 		const mapDir = dirname(resolve(host.getCurrentDirectory(), name));
 		expect(mapDir).toBe(host.getCurrentDirectory());
 		expect(mapDir).not.toBe(root);
