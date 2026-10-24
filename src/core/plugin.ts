@@ -588,7 +588,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 				}
 			}
 
-			const dtsId = normalizedId.replace(tjsRE, '') + '.d.ts';
+			const dtsId = tsToDts(normalizedId);
 			const dtsSourceFile = program.getSourceFile(dtsId);
 			if (dtsSourceFile && filter(dtsSourceFile.fileName)) {
 				// TS can synthesize a declaration file for JS/TS inputs without
@@ -894,17 +894,39 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 					);
 					let fromPath = normalizePath(
 						relative(dirname(entryDtsPath), sourceEntry),
-					).replace(dtsRE, '');
+					).replace(dtsRE, (_extension, prefix: string | undefined) =>
+						prefix ||
+						compilerOptions?.moduleResolution ===
+							ts.ModuleResolutionKind.Node16 ||
+						compilerOptions?.moduleResolution ===
+							ts.ModuleResolutionKind.NodeNext
+							? `.${prefix ?? ''}js`
+							: '',
+					);
 					fromPath = fullRelativeRE.test(fromPath) ? fromPath : `./${fromPath}`;
 
 					let shimContent = 'export {}\n';
 					const emittedEntry = emittedFiles.get(sourceEntry);
 					if (emittedEntry) {
-						if (hasNormalExport(emittedEntry)) {
-							shimContent = `export * from '${fromPath}'\n${shimContent}`;
-						}
-						if (hasExportDefault(emittedEntry)) {
-							shimContent += `import ${libName} from '${fromPath}'\nexport default ${libName}\n`;
+						const hasExportEquals = ts
+							.createSourceFile(
+								sourceEntry,
+								emittedEntry,
+								ts.ScriptTarget.Latest,
+							)
+							.statements.some(
+								(statement) =>
+									ts.isExportAssignment(statement) && statement.isExportEquals,
+							);
+						if (hasExportEquals) {
+							shimContent = `import ${libName} = require('${fromPath}')\nexport = ${libName}\n`;
+						} else {
+							if (hasNormalExport(emittedEntry)) {
+								shimContent = `export * from '${fromPath}'\n${shimContent}`;
+							}
+							if (hasExportDefault(emittedEntry)) {
+								shimContent += `import ${libName} from '${fromPath}'\nexport default ${libName}\n`;
+							}
 						}
 					}
 

@@ -169,4 +169,18 @@ describe('path utils', () => {
 		expect(ctjsRE.test('file.cts')).toBe(true);
 		expect(tsRE.test('file.ts')).toBe(true);
 	});
+
+	it.each([
+		['index.ts', 'index.d.ts'],
+		['index.tsx', 'index.d.ts'],
+		['index.mts', 'index.d.mts'],
+		['index.cts', 'index.d.cts'],
+		['index.js', 'index.d.ts'],
+		['index.jsx', 'index.d.ts'],
+		['index.mjs', 'index.d.mts'],
+		['index.cjs', 'index.d.cts'],
+		['nested/entry', 'nested/entry.d.ts'],
+	])('maps %s to the emitted declaration extension %s', (input, output) => {
+		expect(tsToDts(`src/${input}`)).toBe(`src/${output}`);
+	});
 });
