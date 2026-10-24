@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import ts from '@typescript/typescript6';
@@ -85,27 +85,30 @@ describe('fixture integration', () => {
 		watchers.push(watcher);
 
 		const jsonDtsPath = resolve(root, 'dist/data.json.d.ts');
-		const initialJsonContent = await waitForFileContent(
-			jsonDtsPath,
-			'"label": "before"',
-			15000,
-		);
+		await waitForWatcherRebuild(watcher);
+		const initialJsonContent = await readFile(jsonDtsPath, 'utf8');
+		expect(initialJsonContent).toContain('"label": "before"');
 		expect(initialJsonContent).toContain('"count": 1');
 
-		await writeFile(
-			resolve(root, 'src/data.json'),
-			JSON.stringify({ label: 'after', count: 2 }, null, 2),
-			'utf8',
-		);
+		const pendingJsonPath = resolve(root, 'data.pending');
+		for (const data of [
+			{ label: 'after', count: 2 },
+			{ label: 'again', count: 3 },
+		]) {
+			await writeFile(pendingJsonPath, JSON.stringify(data, null, 2), 'utf8');
+			const rebuild = waitForWatcherRebuild(watcher);
+			await rename(pendingJsonPath, resolve(root, 'src/data.json'));
+			await rebuild;
 
-		watcher.invalidate?.();
-		await waitForWatcherRebuild(watcher);
-		const rebuiltJsonContent = await waitForFileContent(
-			jsonDtsPath,
-			'"label": "after"',
-			15000,
-		);
-		expect(rebuiltJsonContent).toContain('"count": 2');
+			const rebuiltJsonContent = await readFile(jsonDtsPath, 'utf8');
+			expect(rebuiltJsonContent).toContain('declare const _default:');
+			expect(rebuiltJsonContent).toContain(`"label": "${data.label}"`);
+			expect(rebuiltJsonContent).toContain(`"count": ${data.count}`);
+			expect(rebuiltJsonContent).toContain('export default _default;');
+			expect(
+				await readFile(resolve(root, 'dist/index.d.ts'), 'utf8'),
+			).toContain("export { default as data } from './data.json';");
+		}
 	}, 20000);
 
 	it('emits and watches newly introduced type-only dependency chains', async () => {
