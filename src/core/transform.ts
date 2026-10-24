@@ -218,17 +218,19 @@ export function transformDeclarationContent(
 				source.update(node.qualifier.pos, node.qualifier.end, usedType);
 			}
 
-			if (
+			const prefix =
 				ts.isImportTypeNode(parent) &&
 				parent.typeArguments &&
 				parent.typeArguments[0] === node
-			) {
-				source.remove(node.pos, node.argument.end + 2);
-			} else {
-				source.update(node.pos, node.argument.end + 2, ' ');
-			}
+					? ''
+					: ' ';
+			source.update(
+				node.pos,
+				node.qualifier.pos,
+				`${prefix}${node.isTypeOf ? 'typeof ' : ''}`,
+			);
 
-			return !node.typeArguments;
+			return !!node.typeArguments;
 		}
 
 		if (

@@ -68,6 +68,141 @@ describe('transformDeclarationContent', () => {
 		);
 	});
 
+	it('preserves typeof separately from ordinary types with collision-allocated named bindings', () => {
+		const result = transformDeclarationContent({
+			filePath: '/repo/src/feature.d.ts',
+			content:
+				"export type Both = [typeof import('./one').Foo, import('./one').Foo, typeof import('./two').Foo, import('./two').Foo];",
+			aliases: [],
+			aliasesExclude: [],
+			staticImport: true,
+			clearPureImport: true,
+		});
+
+		expect(result.content).toBe(
+			[
+				"import { Foo } from './one';",
+				"import { Foo as Foo_1 } from './two';",
+				'export type Both = [ typeof Foo, Foo, typeof Foo_1, Foo_1];',
+			].join('\n'),
+		);
+	});
+
+	it('preserves typeof when reusing a later named alias', () => {
+		const result = transformDeclarationContent({
+			filePath: '/repo/src/feature.d.ts',
+			content: [
+				"export type Both = [typeof import('./one').Foo, import('./one').Foo];",
+				"import type { Foo as Existing } from './one';",
+				'export type Explicit = typeof Existing;',
+			].join('\n'),
+			aliases: [],
+			aliasesExclude: [],
+			staticImport: true,
+			clearPureImport: true,
+		});
+
+		expect(result.content).toBe(
+			[
+				"import { Foo as Existing } from './one';",
+				'export type Both = [ typeof Existing, Existing];',
+				'export type Explicit = typeof Existing;',
+			].join('\n'),
+		);
+	});
+
+	it.each(['', 'type '])(
+		'preserves typeof when reusing the first %sdefault binding',
+		(importKind) => {
+			const result = transformDeclarationContent({
+				filePath: '/repo/src/feature.d.ts',
+				content: [
+					`import ${importKind}First from './types';`,
+					`import ${importKind}Second from './types';`,
+					"export type Both = [typeof import('./types').default, import('./types').default, typeof import('./types').default, typeof Second];",
+				].join('\n'),
+				aliases: [],
+				aliasesExclude: [],
+				staticImport: true,
+				clearPureImport: true,
+			});
+
+			expect(result.content).toBe(
+				[
+					"import { default as First, default as Second } from './types';",
+					'export type Both = [ typeof First, First, typeof First, typeof Second];',
+				].join('\n'),
+			);
+		},
+	);
+
+	it('preserves typeof with a collision-allocated default binding', () => {
+		const result = transformDeclarationContent({
+			filePath: '/repo/src/feature.d.ts',
+			content: [
+				"export type Both = [typeof import('./types').default, import('./types').default, typeof import('./types').default];",
+				'export interface __DTS_DEFAULT_0__ { reserved: true; }',
+			].join('\n'),
+			aliases: [],
+			aliasesExclude: [],
+			staticImport: true,
+			clearPureImport: true,
+		});
+
+		expect(result.content).toBe(
+			[
+				"import { default as __DTS_DEFAULT_1__ } from './types';",
+				'export type Both = [ typeof __DTS_DEFAULT_1__, __DTS_DEFAULT_1__, typeof __DTS_DEFAULT_1__];',
+				'export interface __DTS_DEFAULT_0__ { reserved: true; }',
+			].join('\n'),
+		);
+	});
+
+	it('preserves typeof in every generic argument position and nested import type', () => {
+		const result = transformDeclarationContent({
+			filePath: '/repo/src/feature.d.ts',
+			content: [
+				"export type First = import('./containers').Pair<typeof import('./one').Foo, import('./one').Foo>;",
+				"export type Second = import('./containers').Pair<import('./one').Foo, typeof import('./one').Foo>;",
+				"export type Deep = Promise<import('./containers').Pair<import('./containers').Pair<typeof import('./types').default, typeof import('./one').Foo>, typeof import('./one').Foo>>;",
+				"export type Instantiated = typeof import('./functions').identity<import('./one').Foo>;",
+			].join('\n'),
+			aliases: [],
+			aliasesExclude: [],
+			staticImport: true,
+			clearPureImport: true,
+		});
+
+		expect(result.content).toBe(
+			[
+				"import { Pair } from './containers';",
+				"import { Foo } from './one';",
+				"import { default as __DTS_DEFAULT_0__ } from './types';",
+				"import { identity } from './functions';",
+				'export type First = Pair<typeof Foo, Foo>;',
+				'export type Second = Pair<Foo, typeof Foo>;',
+				'export type Deep = Promise< Pair<Pair<typeof __DTS_DEFAULT_0__, typeof Foo>, typeof Foo>>;',
+				'export type Instantiated = typeof identity<Foo>;',
+			].join('\n'),
+		);
+	});
+
+	it('retains typeof import types while rewriting aliases without static imports', () => {
+		const result = transformDeclarationContent({
+			filePath: '/repo/src/feature.d.ts',
+			content:
+				"export type Both = [typeof import('@/one').Foo, import('@/one').Foo];",
+			aliases: [{ find: '@/', replacement: '/repo/src/' }],
+			aliasesExclude: [],
+			staticImport: false,
+			clearPureImport: true,
+		});
+
+		expect(result.content).toBe(
+			"export type Both = [typeof import('./one').Foo, import('./one').Foo];",
+		);
+	});
+
 	it.each([
 		"import type { Other as Foo } from './other';",
 		"import Foo from './other';",

@@ -398,6 +398,118 @@ describe('fixture integration', () => {
 		rollupIntegrationTimeoutMs,
 	);
 
+	it.each([false, true])(
+		'preserves callable and constructor typeof import types with rollupTypes=%s',
+		async (rollupTypes) => {
+			const root = await createFixtureWorkspace('hooks-basic');
+			await writeFile(
+				resolve(root, 'src/index.ts'),
+				[
+					"import type { Foo as ExistingFunction } from './functions';",
+					"import type ExistingDefault from './functions';",
+					"export type NamedFunction = typeof import('./functions').Foo;",
+					"export type DefaultFunction = typeof import('./functions').default;",
+					"export type NamedConstructor = typeof import('./classes').Foo;",
+					"export type DefaultConstructor = typeof import('./classes').default;",
+					"export type ClassInstances = [import('./classes').Foo, import('./classes').default];",
+					"export type Nested = import('./types').Pair<typeof import('./functions').Foo, import('./types').Pair<import('./classes').Foo, typeof import('./classes').default>>;",
+					"export type GenericFunction = typeof import('./functions').identity<import('./classes').Foo>;",
+					'export type ExistingBindings = [typeof ExistingFunction, typeof ExistingDefault];',
+					'export interface Foo { local: true; }',
+					'export interface __DTS_DEFAULT_0__ { reserved: true; }',
+				].join('\n'),
+				'utf8',
+			);
+			await writeFile(
+				resolve(root, 'src/functions.ts'),
+				[
+					'export function Foo(label: string, count: number): { label: string; count: number } { return { label, count }; }',
+					'export default function createDefault(value: number): string { return String(value); }',
+					'export function identity<T>(value: T): T { return value; }',
+				].join('\n'),
+				'utf8',
+			);
+			await writeFile(
+				resolve(root, 'src/classes.ts'),
+				[
+					"export class Foo { static readonly kind = 'named'; constructor(public label: string, public count: number) {} }",
+					"export default class Shape { static readonly kind = 'default'; constructor(public enabled: boolean) {} }",
+				].join('\n'),
+				'utf8',
+			);
+			await writeFile(
+				resolve(root, 'src/types.ts'),
+				'export type Pair<A, B> = [A, B];\n',
+				'utf8',
+			);
+
+			const compilerDiagnostics: ts.Diagnostic[] = [];
+			await build({
+				configFile: false,
+				root,
+				logLevel: 'silent',
+				build: {
+					lib: {
+						entry: resolve(root, 'src/index.ts'),
+						name: 'TypeofImportFixture',
+						fileName: 'index',
+					},
+				},
+				plugins: [
+					dtsPlugin({
+						declarationOnly: true,
+						staticImport: true,
+						rollupTypes,
+						afterDiagnostic(diagnostics) {
+							compilerDiagnostics.push(...diagnostics);
+						},
+					}),
+				],
+			});
+			expect(compilerDiagnostics).toEqual([]);
+
+			await expectConsumerTypecheck(
+				root,
+				[
+					"import type { NamedFunction, DefaultFunction, NamedConstructor, DefaultConstructor, ClassInstances, Nested, GenericFunction, ExistingBindings } from './dist/index';",
+					'declare const namedFunction: NamedFunction;',
+					"const namedArgs: Parameters<NamedFunction> = ['named', 2];",
+					'const namedResult: ReturnType<NamedFunction> = namedFunction(...namedArgs);',
+					'const label: string = namedResult.label;',
+					'declare const defaultFunction: DefaultFunction;',
+					'const defaultArgs: Parameters<DefaultFunction> = [3];',
+					'const defaultResult: ReturnType<DefaultFunction> = defaultFunction(...defaultArgs);',
+					'const text: string = defaultResult;',
+					'declare const Named: NamedConstructor;',
+					"const namedConstructorArgs: ConstructorParameters<NamedConstructor> = ['class', 4];",
+					'const namedInstance: InstanceType<NamedConstructor> = new Named(...namedConstructorArgs);',
+					"const namedKind: 'named' = Named.kind;",
+					'declare const Default: DefaultConstructor;',
+					'const defaultConstructorArgs: ConstructorParameters<DefaultConstructor> = [true];',
+					'const defaultInstance: InstanceType<DefaultConstructor> = new Default(...defaultConstructorArgs);',
+					"const defaultKind: 'default' = Default.kind;",
+					'const instances: ClassInstances = [namedInstance, defaultInstance];',
+					'const nested: Nested = [namedFunction, [namedInstance, Default]];',
+					'declare const genericFunction: GenericFunction;',
+					'const genericResult: InstanceType<NamedConstructor> = genericFunction(namedInstance);',
+					'const existing: ExistingBindings = [namedFunction, defaultFunction];',
+					'// @ts-expect-error Named function parameters must not be erased.',
+					"namedFunction(1, 'wrong');",
+					'// @ts-expect-error Default function parameters must not be erased.',
+					"defaultFunction('wrong');",
+					'// @ts-expect-error Named constructor parameters must not be erased.',
+					'new Named(true);',
+					'// @ts-expect-error Default constructor parameters must not be erased.',
+					"new Default('wrong');",
+					'// @ts-expect-error Ordinary class import types remain instance types.',
+					'const invalidInstances: ClassInstances = [Named, Default];',
+					'export { namedResult, label, defaultResult, text, namedInstance, namedKind, defaultInstance, defaultKind, instances, nested, genericResult, existing, invalidInstances };',
+				].join('\n'),
+			);
+		},
+		rollupIntegrationTimeoutMs,
+	);
+
 	it('builds a multi-entry library and emits declarations for each entry', async () => {
 		const root = await runFixtureBuild('multi-entry', (fixtureRoot) => ({
 			build: {
