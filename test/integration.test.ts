@@ -1257,6 +1257,126 @@ describe('filter integration', () => {
 });
 
 describe('tsconfig paths integration', () => {
+	it.each([false, true])(
+		'emits consumer-valid namespace and qualified import types without Vite aliases with staticImport=%s',
+		async (staticImport) => {
+			const root = await createFixtureWorkspace('hooks-basic');
+			await writeFile(
+				resolve(root, 'tsconfig.json'),
+				JSON.stringify({
+					compilerOptions: {
+						target: 'ES2022',
+						module: 'ESNext',
+						moduleResolution: 'Bundler',
+						strict: true,
+						paths: { '@/*': ['./src/*'] },
+					},
+					include: ['src'],
+				}),
+				'utf8',
+			);
+			await writeFile(
+				resolve(root, 'src/index.ts'),
+				[
+					"import * as Regular from '@/types';",
+					"import type * as Types from '@/types';",
+					"import Default, * as Combined from '@/types';",
+					'export type NamespaceBindings = [Regular.Namespace.Shape, Types.Namespace.Shape, Combined.Namespace.Shape, Default];',
+					"export type Qualified = import('@/types').Namespace.Shape;",
+					"export type QualifiedClass = import('@/types').Namespace.Foo;",
+					"export type QualifiedConstructor = typeof import('@/types').Namespace.Foo;",
+					"export type QualifiedFunction = typeof import('@/types').Namespace.create;",
+					"export type Module = typeof import('@/types');",
+					"export type Nested = import('@/types').Pair<import('@/types').Namespace.Shape, import('@/types').Namespace.Pair<import('@/types').Leaf, typeof import('@/types')>>;",
+					"export type Instantiated = typeof import('@/types').Namespace.identity<import('@/types').Leaf>;",
+					"export type SimpleFunction = typeof import('@/types').create;",
+				].join('\n'),
+				'utf8',
+			);
+			await writeFile(
+				resolve(root, 'src/types.ts'),
+				[
+					'export default interface DefaultShape { default: true; }',
+					'export interface Leaf { leaf: true; }',
+					'export type Pair<A, B> = [A, B];',
+					'export function create(label: string): { label: string } { return { label }; }',
+					'export namespace Namespace {',
+					'  export interface Shape { label: string; }',
+					"  export class Foo { static readonly kind = 'namespace'; constructor(public label: string) {} }",
+					'  export function create(label: string): Shape { return { label }; }',
+					'  export type Pair<A, B> = [A, B];',
+					'  export function identity<T>(value: T): T { return value; }',
+					'}',
+				].join('\n'),
+				'utf8',
+			);
+
+			const compilerDiagnostics: ts.Diagnostic[] = [];
+			await build({
+				configFile: false,
+				root,
+				logLevel: 'silent',
+				build: {
+					lib: {
+						entry: resolve(root, 'src/index.ts'),
+						name: 'NamespacePathsFixture',
+						fileName: 'index',
+					},
+				},
+				plugins: [
+					dtsPlugin({
+						declarationOnly: true,
+						staticImport,
+						afterDiagnostic(diagnostics) {
+							compilerDiagnostics.push(...diagnostics);
+						},
+					}),
+				],
+			});
+			expect(compilerDiagnostics).toEqual([]);
+
+			await expectConsumerTypecheck(
+				root,
+				[
+					"import type { NamespaceBindings, Qualified, QualifiedClass, QualifiedConstructor, QualifiedFunction, Module, Nested, Instantiated, SimpleFunction } from './dist/index';",
+					"const shape: Qualified = { label: 'consumer' };",
+					'const bindings: NamespaceBindings = [shape, shape, shape, { default: true }];',
+					'declare const Constructor: QualifiedConstructor;',
+					"const instance: QualifiedClass = new Constructor('instance');",
+					"const kind: 'namespace' = Constructor.kind;",
+					'declare const create: QualifiedFunction;',
+					"const created: Qualified = create('function');",
+					'declare const module: Module;',
+					"const moduleShape: Qualified = module.Namespace.create('module');",
+					"const moduleInstance: QualifiedClass = new module.Namespace.Foo('module');",
+					"const simple: ReturnType<SimpleFunction> = module.create('simple');",
+					'const nested: Nested = [shape, [{ leaf: true }, module]];',
+					'declare const identity: Instantiated;',
+					'const leaf: { leaf: true } = identity({ leaf: true });',
+					'// @ts-expect-error Qualified constructors keep their parameters.',
+					'new Constructor(123);',
+					'// @ts-expect-error Qualified functions keep their parameters.',
+					'create(123);',
+					'// @ts-expect-error Whole-module typeof retains the namespace function signature.',
+					'module.Namespace.create(123);',
+					'// @ts-expect-error Qualified generic functions retain rewritten type arguments.',
+					'identity({ leaf: false });',
+					'export { bindings, instance, kind, created, moduleShape, moduleInstance, simple, nested, leaf };',
+				].join('\n'),
+			);
+
+			const content = await readFile(resolve(root, 'dist/index.d.ts'), 'utf8');
+			expect(content).not.toContain('@/');
+			expect(content).toContain("import * as Regular from './types';");
+			expect(content).toContain("import type * as Types from './types';");
+			expect(content).toContain(
+				"import Default, * as Combined from './types';",
+			);
+			expect(content).toContain("typeof import('./types').Namespace.Foo");
+			expect(content).toContain("typeof import('./types');");
+		},
+	);
+
 	const fixtures: Array<{
 		name: string;
 		tsconfigPath?: string;

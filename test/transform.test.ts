@@ -203,6 +203,154 @@ describe('transformDeclarationContent', () => {
 		);
 	});
 
+	describe.each([false, true])(
+		'alias rewriting with staticImport=%s',
+		(staticImport) => {
+			it.each([
+				"import * as Types from '@/types';",
+				"import type * as Types from '@/types';",
+				"import Default, * as Types from '@/types';",
+			])('preserves namespace bindings in %s', (declaration) => {
+				const content = [
+					declaration,
+					'export type Example = Types.Namespace.Shape;',
+				].join('\n');
+				const result = transformDeclarationContent({
+					filePath: '/repo/src/feature.d.ts',
+					content,
+					aliases: [{ find: '@/', replacement: '/repo/src/' }],
+					aliasesExclude: [],
+					staticImport,
+					clearPureImport: true,
+				});
+
+				expect(result.content).toBe(content.replace('@/types', './types'));
+			});
+
+			it('keeps combined default and namespace bindings distinct from static imports', () => {
+				const content = [
+					"import Default, * as Foo from '@/types';",
+					"export type Both = [Default, Foo.Namespace.Shape, import('@/types').default, typeof import('@/types').default, import('@/other').Foo];",
+				].join('\n');
+				const result = transformDeclarationContent({
+					filePath: '/repo/src/feature.d.ts',
+					content,
+					aliases: [{ find: '@/', replacement: '/repo/src/' }],
+					aliasesExclude: [],
+					staticImport,
+					clearPureImport: true,
+				});
+
+				expect(result.content).toBe(
+					staticImport
+						? [
+								"import { default as __DTS_DEFAULT_0__ } from './types';",
+								"import { Foo as Foo_1 } from './other';",
+								"import Default, * as Foo from './types';",
+								'export type Both = [Default, Foo.Namespace.Shape, __DTS_DEFAULT_0__, typeof __DTS_DEFAULT_0__, Foo_1];',
+							].join('\n')
+						: content.replaceAll('@/', './'),
+				);
+			});
+
+			it('retains qualified and whole-module import types while rewriting their paths', () => {
+				const content = [
+					"export type Shape = import('@/types').Namespace.Shape;",
+					"export type Constructor = typeof import('@/types').Namespace.Foo;",
+					"export type Function = typeof import('@/types').Namespace.create;",
+					"export type Module = typeof import('@/types');",
+				].join('\n');
+				const result = transformDeclarationContent({
+					filePath: '/repo/src/feature.d.ts',
+					content,
+					aliases: [{ find: '@/', replacement: '/repo/src/' }],
+					aliasesExclude: [],
+					staticImport,
+					clearPureImport: true,
+				});
+
+				expect(result.content).toBe(content.replaceAll('@/types', './types'));
+			});
+
+			it('rewrites nested arguments of simple and unconverted qualified import types', () => {
+				const content = [
+					"export type Simple = import('@/outer').Box<import('@/inner').Leaf>;",
+					"export type Qualified = import('@/outer').Namespace.Pair<import('@/inner').Leaf, import('@/outer').Namespace.Pair<typeof import('@/inner').create, import('@/outer').Box<import('@/inner').Leaf>>>;",
+				].join('\n');
+				const result = transformDeclarationContent({
+					filePath: '/repo/src/feature.d.ts',
+					content,
+					aliases: [{ find: '@/', replacement: '/repo/src/' }],
+					aliasesExclude: [],
+					staticImport,
+					clearPureImport: true,
+				});
+
+				expect(result.content).toBe(
+					staticImport
+						? [
+								"import { Box } from './outer';",
+								"import { Leaf, create } from './inner';",
+								'export type Simple = Box<Leaf>;',
+								"export type Qualified = import('./outer').Namespace.Pair<Leaf, import('./outer').Namespace.Pair<typeof create, Box<Leaf>>>;",
+							].join('\n')
+						: content.replaceAll('@/', './'),
+				);
+			});
+
+			it.each([
+				{ module: '@/excluded', aliasesExclude: ['@/excluded'] },
+				{ module: '@/excluded', aliasesExclude: [/^@\/excluded$/] },
+				{ module: './existing', aliasesExclude: [] },
+				{ module: 'external', aliasesExclude: [] },
+			])(
+				'keeps excluded or unmatched paths in $module and still visits nested arguments',
+				({ module, aliasesExclude }) => {
+					const content = [
+						`import type * as Types from '${module}';`,
+						`import Default, * as Combined from '${module}';`,
+						`import '${module}';`,
+						`export type Module = typeof import('${module}');`,
+						`export type Nested = import('${module}').Namespace.Box<import('@/inner').Leaf>;`,
+					].join('\n');
+					const result = transformDeclarationContent({
+						filePath: '/repo/src/feature.d.ts',
+						content,
+						aliases: [{ find: '@/', replacement: '/repo/src/' }],
+						aliasesExclude,
+						staticImport,
+						clearPureImport: false,
+					});
+
+					expect(result.content).toBe(
+						staticImport
+							? `import { Leaf } from './inner';\n${content.replace("import('@/inner').Leaf", 'Leaf')}`
+							: content.replace('@/inner', './inner'),
+					);
+				},
+			);
+
+			it.each([false, true])(
+				'rewrites preserved side-effect imports with clearPureImport=%s',
+				(clearPureImport) => {
+					const result = transformDeclarationContent({
+						filePath: '/repo/src/feature.d.ts',
+						content:
+							"import '@/side-effect';\nexport interface Example { value: string; }",
+						aliases: [{ find: '@/', replacement: '/repo/src/' }],
+						aliasesExclude: [],
+						staticImport,
+						clearPureImport,
+					});
+
+					expect(result.content).toBe(
+						`${clearPureImport ? '' : "import './side-effect';\n"}export interface Example { value: string; }`,
+					);
+				},
+			);
+		},
+	);
+
 	it.each([
 		"import type { Other as Foo } from './other';",
 		"import Foo from './other';",

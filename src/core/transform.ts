@@ -128,30 +128,39 @@ export function transformDeclarationContent(
 
 	walkSourceFile(ast, (node, parent) => {
 		if (ts.isImportDeclaration(node)) {
-			if (!node.importClause) {
-				if (options.clearPureImport) {
-					source.remove(node.pos, node.end);
-				}
+			if (!node.importClause && options.clearPureImport) {
+				source.remove(node.pos, node.end);
 				importCount += 1;
 				return false;
 			}
 
-			if (
-				ts.isStringLiteral(node.moduleSpecifier) &&
-				(node.importClause.name ||
-					(node.importClause.namedBindings &&
-						ts.isNamedImports(node.importClause.namedBindings)))
-			) {
+			if (ts.isStringLiteral(node.moduleSpecifier)) {
 				const libName = toLibName(node.moduleSpecifier.text);
+				// Namespace bindings cannot be represented by the named-import map,
+				// including when they share a declaration with a default binding.
+				if (
+					!node.importClause ||
+					(node.importClause.namedBindings &&
+						ts.isNamespaceImport(node.importClause.namedBindings))
+				) {
+					if (libName !== node.moduleSpecifier.text) {
+						source.update(
+							node.moduleSpecifier.getStart(ast),
+							node.moduleSpecifier.end,
+							`'${libName}'`,
+						);
+					}
+					if (!node.importClause) {
+						importCount += 1;
+					}
+					return false;
+				}
+
 				const importSet = importMap.get(libName) ?? new Set<string>();
 				importMap.set(libName, importSet);
-
 				if (node.importClause.name) {
 					const usedType = node.importClause.name.text;
-					if (
-						!usedDefault.has(libName) &&
-						!shadowedIdentifiers.has(usedType)
-					) {
+					if (!usedDefault.has(libName) && !shadowedIdentifiers.has(usedType)) {
 						usedDefault.set(libName, usedType);
 					}
 					importSet.add(`default as ${usedType}`);
@@ -181,19 +190,23 @@ export function transformDeclarationContent(
 
 		if (
 			ts.isImportTypeNode(node) &&
-			node.qualifier &&
 			ts.isLiteralTypeNode(node.argument) &&
-			ts.isStringLiteral(node.argument.literal) &&
-			ts.isIdentifier(node.qualifier)
+			ts.isStringLiteral(node.argument.literal)
 		) {
 			const libName = toLibName(node.argument.literal.text);
-			if (!options.staticImport) {
-				source.update(
-					node.argument.literal.pos,
-					node.argument.literal.end,
-					`'${libName}'`,
-				);
-				return !node.typeArguments;
+			if (
+				!options.staticImport ||
+				!node.qualifier ||
+				!ts.isIdentifier(node.qualifier)
+			) {
+				if (libName !== node.argument.literal.text) {
+					source.update(
+						node.argument.literal.getStart(ast),
+						node.argument.literal.end,
+						`'${libName}'`,
+					);
+				}
+				return !!node.typeArguments;
 			}
 
 			// `import("foo").Bar` is valid in declarations, but turning it into a
