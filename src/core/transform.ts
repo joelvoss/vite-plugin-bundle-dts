@@ -1,7 +1,7 @@
 import { dirname } from 'node:path';
 
+import ts from '@typescript/typescript6';
 import { MagicString } from 'magic-string';
-import ts from 'typescript';
 
 import type {
 	TransformDeclarationOptions,
@@ -43,6 +43,9 @@ export function transformDeclarationContent(
 	// block.
 	const importMap = new Map<string, Set<string>>();
 	const usedDefault = new Map<string, string>();
+	const usedNamed = new Map<string, Map<string, string>>();
+	const reservedIdentifiers = new Set<string>();
+	const shadowedIdentifiers = new Set<string>();
 	const declareModules: string[] = [];
 
 	const toLibName = (origin: string): string =>
@@ -51,29 +54,115 @@ export function transformDeclarationContent(
 	let generatedDefaultIndex = 0;
 	let importCount = 0;
 
+	if (options.staticImport) {
+		// Reserve names before rewriting, including identifiers in nested scopes
+		// and declarations/imports that appear after an import type.
+		walkSourceFile(ast, (node, parent) => {
+			if (ts.isImportDeclaration(node) && parent === ast) {
+				if (node.importClause?.name) {
+					reservedIdentifiers.add(node.importClause.name.text);
+				}
+				const bindings = node.importClause?.namedBindings;
+				if (bindings) {
+					if (ts.isNamespaceImport(bindings)) {
+						reservedIdentifiers.add(bindings.name.text);
+					} else {
+						for (const element of bindings.elements) {
+							reservedIdentifiers.add(element.name.text);
+						}
+					}
+				}
+				return false;
+			}
+			if (
+				ts.isIdentifier(node) &&
+				!(ts.isImportTypeNode(parent) && parent.qualifier === node)
+			) {
+				reservedIdentifiers.add(node.text);
+				// Conservatively avoid reusing any import binding whose name is
+				// also declared elsewhere, so it stays valid at every use site.
+				if ('name' in parent && parent.name === node) {
+					shadowedIdentifiers.add(node.text);
+				}
+			}
+		});
+
+		for (const statement of ast.statements) {
+			if (
+				ts.isImportDeclaration(statement) &&
+				ts.isStringLiteral(statement.moduleSpecifier) &&
+				statement.importClause?.namedBindings &&
+				ts.isNamedImports(statement.importClause.namedBindings)
+			) {
+				const libName = toLibName(statement.moduleSpecifier.text);
+				const bindings = usedNamed.get(libName) ?? new Map<string, string>();
+				usedNamed.set(libName, bindings);
+				for (const element of statement.importClause.namedBindings.elements) {
+					const name = (element.propertyName ?? element.name).text;
+					if (
+						!bindings.has(name) &&
+						!shadowedIdentifiers.has(element.name.text)
+					) {
+						bindings.set(name, element.name.text);
+					}
+				}
+			}
+		}
+	}
+
+	const allocateName = (name: string): string => {
+		let localName: string;
+		let index = 0;
+		do {
+			localName =
+				name === 'default'
+					? `__DTS_DEFAULT_${generatedDefaultIndex++}__`
+					: index === 0
+						? name
+						: `${name}_${index}`;
+			index += 1;
+		} while (reservedIdentifiers.has(localName));
+		reservedIdentifiers.add(localName);
+		return localName;
+	};
+
 	walkSourceFile(ast, (node, parent) => {
 		if (ts.isImportDeclaration(node)) {
-			if (!node.importClause) {
-				if (options.clearPureImport) {
-					source.remove(node.pos, node.end);
-				}
+			if (!node.importClause && options.clearPureImport) {
+				source.remove(node.pos, node.end);
 				importCount += 1;
 				return false;
 			}
 
-			if (
-				ts.isStringLiteral(node.moduleSpecifier) &&
-				(node.importClause.name ||
-					(node.importClause.namedBindings &&
-						ts.isNamedImports(node.importClause.namedBindings)))
-			) {
+			if (ts.isStringLiteral(node.moduleSpecifier)) {
 				const libName = toLibName(node.moduleSpecifier.text);
+				// Namespace bindings cannot be represented by the named-import map,
+				// including when they share a declaration with a default binding.
+				if (
+					!node.importClause ||
+					(node.importClause.namedBindings &&
+						ts.isNamespaceImport(node.importClause.namedBindings))
+				) {
+					if (libName !== node.moduleSpecifier.text) {
+						source.update(
+							node.moduleSpecifier.getStart(ast),
+							node.moduleSpecifier.end,
+							`'${libName}'`,
+						);
+					}
+					if (!node.importClause) {
+						importCount += 1;
+					}
+					return false;
+				}
+
 				const importSet = importMap.get(libName) ?? new Set<string>();
 				importMap.set(libName, importSet);
-
-				if (node.importClause.name && !usedDefault.has(libName)) {
-					const usedType = node.importClause.name.escapedText.toString();
-					usedDefault.set(libName, usedType);
+				if (node.importClause.name) {
+					const usedType = node.importClause.name.text;
+					if (!usedDefault.has(libName) && !shadowedIdentifiers.has(usedType)) {
+						usedDefault.set(libName, usedType);
+					}
 					importSet.add(`default as ${usedType}`);
 				}
 
@@ -84,10 +173,10 @@ export function transformDeclarationContent(
 					for (const element of node.importClause.namedBindings.elements) {
 						if (element.propertyName) {
 							importSet.add(
-								`${element.propertyName.getText(ast)} as ${element.name.escapedText.toString()}`,
+								`${element.propertyName.getText(ast)} as ${element.name.text}`,
 							);
 						} else {
-							importSet.add(element.name.escapedText.toString());
+							importSet.add(element.name.text);
 						}
 					}
 				}
@@ -101,19 +190,23 @@ export function transformDeclarationContent(
 
 		if (
 			ts.isImportTypeNode(node) &&
-			node.qualifier &&
 			ts.isLiteralTypeNode(node.argument) &&
-			ts.isStringLiteral(node.argument.literal) &&
-			ts.isIdentifier(node.qualifier)
+			ts.isStringLiteral(node.argument.literal)
 		) {
 			const libName = toLibName(node.argument.literal.text);
-			if (!options.staticImport) {
-				source.update(
-					node.argument.literal.pos,
-					node.argument.literal.end,
-					`'${libName}'`,
-				);
-				return !node.typeArguments;
+			if (
+				!options.staticImport ||
+				!node.qualifier ||
+				!ts.isIdentifier(node.qualifier)
+			) {
+				if (libName !== node.argument.literal.text) {
+					source.update(
+						node.argument.literal.getStart(ast),
+						node.argument.literal.end,
+						`'${libName}'`,
+					);
+				}
+				return !!node.typeArguments;
 			}
 
 			// `import("foo").Bar` is valid in declarations, but turning it into a
@@ -121,30 +214,36 @@ export function transformDeclarationContent(
 			// predictable.
 			const importSet = importMap.get(libName) ?? new Set<string>();
 			importMap.set(libName, importSet);
-			let usedType = node.qualifier.escapedText.toString();
+			const name = node.qualifier.text;
+			let usedType: string;
 
-			if (usedType === 'default') {
-				usedType =
-					usedDefault.get(libName) ??
-					`__DTS_DEFAULT_${generatedDefaultIndex++}__`;
+			if (name === 'default') {
+				usedType = usedDefault.get(libName) ?? allocateName(name);
 				usedDefault.set(libName, usedType);
-				importSet.add(`default as ${usedType}`);
-				source.update(node.qualifier.pos, node.qualifier.end, usedType);
 			} else {
-				importSet.add(usedType);
+				const bindings = usedNamed.get(libName) ?? new Map<string, string>();
+				usedNamed.set(libName, bindings);
+				usedType = bindings.get(name) ?? allocateName(name);
+				bindings.set(name, usedType);
+			}
+			importSet.add(name === usedType ? name : `${name} as ${usedType}`);
+			if (usedType !== name) {
+				source.update(node.qualifier.pos, node.qualifier.end, usedType);
 			}
 
-			if (
+			const prefix =
 				ts.isImportTypeNode(parent) &&
 				parent.typeArguments &&
 				parent.typeArguments[0] === node
-			) {
-				source.remove(node.pos, node.argument.end + 2);
-			} else {
-				source.update(node.pos, node.argument.end + 2, ' ');
-			}
+					? ''
+					: ' ';
+			source.update(
+				node.pos,
+				node.qualifier.pos,
+				`${prefix}${node.isTypeOf ? 'typeof ' : ''}`,
+			);
 
-			return !node.typeArguments;
+			return !!node.typeArguments;
 		}
 
 		if (

@@ -7,7 +7,21 @@
     "vitest"
   ],
   "categories": {},
-  "rules": {},
+  "rules": {
+    "vitest/expect-expect": [
+      "warn",
+      {
+        "assertFunctionNames": [
+          "expect",
+          "expectTypeOf",
+          "assert",
+          "assertType",
+          "expectFile",
+          "expectNoFile"
+        ]
+      }
+    ]
+  },
   "settings": {
     "vitest": {
       "typecheck": false

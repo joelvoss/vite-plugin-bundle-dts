@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
-import ts from 'typescript';
+import ts from '@typescript/typescript6';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -102,7 +102,7 @@ describe('tsconfig utils', () => {
 		};
 		setModuleResolution(commonJsOptions);
 		expect(commonJsOptions.moduleResolution).toBe(
-			ts.ModuleResolutionKind.Node10,
+			ts.ModuleResolutionKind.Bundler,
 		);
 
 		const bundlerOptions: ts.CompilerOptions = { module: ts.ModuleKind.ESNext };

@@ -53,19 +53,22 @@ export async function runParallel<T>(
 	source: T[],
 	iteratorFn: (item: T, source: T[]) => Promise<void>,
 ): Promise<void> {
+	const tasks: Promise<void>[] = [];
 	const running = new Set<Promise<void>>();
 	for (const item of source) {
 		const task = Promise.resolve().then(() => iteratorFn(item, source));
+		tasks.push(task);
 		running.add(task);
-		task.finally(() => {
+		const cleanup = () => {
 			running.delete(task);
-		});
+		};
+		task.then(cleanup, cleanup);
 
 		if (maxConcurrency > 0 && running.size >= maxConcurrency) {
 			await Promise.race(running);
 		}
 	}
-	await Promise.all(Array.from(running));
+	await Promise.all(tasks);
 }
 
 type MaybePromise<T> = T | Promise<T>;

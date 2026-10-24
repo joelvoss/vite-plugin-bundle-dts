@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { dirname, resolve as nodeResolve } from 'node:path';
+import { dirname } from 'node:path';
 
 import type {
 	ExtractorMessage,
@@ -15,6 +15,10 @@ const dtsRE = /\.d\.(m|c)?tsx?$/;
 const preambleMessageId = 'console-preamble';
 const compilerVersionNoticeMessageId = 'console-compiler-version-notice';
 const localRequire = createRequire(import.meta.url);
+const compatibilityPackagePath = localRequire.resolve(
+	'@typescript/typescript6/package.json',
+);
+const compatibilityRequire = createRequire(compatibilityPackagePath);
 
 let apiExtractorModulePromise:
 	| Promise<typeof import('@microsoft/api-extractor')>
@@ -23,82 +27,29 @@ let apiExtractorModulePromise:
 ////////////////////////////////////////////////////////////////////////////////
 
 /**
- * API Extractor resolves TypeScript independently from the rest of the build.
- * Resolve the compiler package from the consuming project root so declaration
- * rollup stays aligned with the host dependency tree.
+ * TypeScript 7 no longer exposes the legacy compiler API required by this
+ * plugin and API Extractor. Use the TypeScript 6 compatibility package's
+ * compiler library and its matching standard library declarations.
  */
-function getProjectRequires(root: string): NodeJS.Require[] {
-	const resolutionRoots = [root, process.cwd()];
-	const seenPaths = new Set<string>();
-	const requires: NodeJS.Require[] = [];
-
-	for (const resolutionRoot of resolutionRoots) {
-		try {
-			const packageJsonPath = nodeResolve(resolutionRoot, 'package.json');
-			if (seenPaths.has(packageJsonPath)) {
-				continue;
-			}
-
-			seenPaths.add(packageJsonPath);
-			requires.push(createRequire(packageJsonPath));
-		} catch {
-			continue;
-		}
-	}
-
-	requires.push(localRequire);
-
-	return requires;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-/**
- * API Extractor needs to know the path to the TypeScript compiler to roll up
- * declaration files. Resolve the compiler package from the consuming project
- * root to stay aligned with the host dependency tree and avoid conflicts with
- * API Extractor's own nested version.
- */
-export function getTsLibFolder(root: string): string | undefined {
-	for (const require of getProjectRequires(root)) {
-		try {
-			return normalizePath(dirname(require.resolve('typescript/package.json')));
-		} catch {
-			continue;
-		}
-	}
-
-	return undefined;
+export function getTsLibFolder(): string {
+	const compilerPackagePath = compatibilityRequire.resolve(
+		'@typescript/old/package.json',
+	);
+	return normalizePath(dirname(compilerPackagePath));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 /**
  * API Extractor imports its own nested `typescript` package at module load
- * time. Because npm overrides only apply in the consuming application's root
- * manifest, published plugins cannot rely on them. Patch API Extractor's local
- * module cache entry before importing it so its compiler binding uses the host
- * TypeScript instance automatically.
+ * time. Patch that cache entry before importing API Extractor so its compiler
+ * binding uses the same compatibility API as this plugin.
  */
-function enforceHostTypeScript(root: string): void {
-	let hostTypeScriptModule: NodeJS.Module | undefined;
-
-	for (const require of getProjectRequires(root)) {
-		try {
-			const hostTypeScriptEntry = require.resolve('typescript');
-			require(hostTypeScriptEntry);
-			hostTypeScriptModule = require.cache[hostTypeScriptEntry];
-			if (hostTypeScriptModule) {
-				break;
-			}
-		} catch {
-			continue;
-		}
-	}
-
-	if (!hostTypeScriptModule) {
-		return;
-	}
+function enforceCompatibilityTypeScript(): void {
+	const compilerEntry = compatibilityRequire.resolve('@typescript/old');
+	compatibilityRequire(compilerEntry);
+	const compilerModule = compatibilityRequire.cache[compilerEntry];
+	if (!compilerModule) return;
 
 	const apiExtractorPackagePath = localRequire.resolve(
 		'@microsoft/api-extractor/package.json',
@@ -106,7 +57,7 @@ function enforceHostTypeScript(root: string): void {
 	const apiExtractorRequire = createRequire(apiExtractorPackagePath);
 	const apiExtractorTypeScriptEntry = apiExtractorRequire.resolve('typescript');
 
-	apiExtractorRequire.cache[apiExtractorTypeScriptEntry] = hostTypeScriptModule;
+	apiExtractorRequire.cache[apiExtractorTypeScriptEntry] = compilerModule;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -117,11 +68,11 @@ function enforceHostTypeScript(root: string): void {
  * rollup is not needed, which can save time and memory in some cases since API
  * Extractor is a large dependency with many nested dependencies of its own.
  */
-async function loadApiExtractor(
-	root: string,
-): Promise<typeof import('@microsoft/api-extractor')> {
+async function loadApiExtractor(): Promise<
+	typeof import('@microsoft/api-extractor')
+> {
 	if (!apiExtractorModulePromise) {
-		enforceHostTypeScript(root);
+		enforceCompatibilityTypeScript();
 		apiExtractorModulePromise = import('@microsoft/api-extractor');
 	}
 
@@ -160,7 +111,7 @@ export async function rollupDeclarationFiles({
 	rollupOptions?: Record<string, unknown>;
 }): Promise<unknown> {
 	const { Extractor, ExtractorConfig, ExtractorLogLevel } =
-		await loadApiExtractor(root);
+		await loadApiExtractor();
 	const configObjectFullPath = resolvePath(root, 'api-extractor.json');
 	const normalizedFileName = dtsRE.test(fileName)
 		? fileName

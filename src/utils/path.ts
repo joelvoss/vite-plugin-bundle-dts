@@ -271,7 +271,7 @@ export function extPrefix(filePath: string): string {
 }
 
 export function tsToDts(filePath: string): string {
-	return `${filePath.replace(tsRE, '')}.d.ts`;
+	return `${filePath.replace(/\.(m|c)?(t|j)sx?$/, '')}.d.${extPrefix(filePath)}ts`;
 }
 
 export function toEntryMap(

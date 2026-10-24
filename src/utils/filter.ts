@@ -3,23 +3,26 @@ import { normalizePath } from './common.ts';
 type FilterPattern = string | RegExp;
 
 function escapeRegex(value: string): string {
-	return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+	return value.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&');
 }
 
 function globToRegExp(glob: string): RegExp {
 	const normalized = normalizePath(glob);
 	const segments = normalized.split('/');
 	const pattern = segments
-		.map((segment) => {
+		.map((segment, index) => {
+			const isLast = index === segments.length - 1;
 			if (segment === '**') {
-				return '.*';
+				return isLast ? '.*' : '(?:[^/]*/)*';
 			}
 
-			return escapeRegex(segment)
-				.replace(/\\\*/g, '[^/]*')
-				.replace(/\\\?/g, '[^/]');
+			return (
+				escapeRegex(segment)
+					.replace(/\\\*/g, '[^/]*')
+					.replace(/\\\?/g, '[^/]') + (isLast ? '' : '/')
+			);
 		})
-		.join('/');
+		.join('');
 
 	return new RegExp(`^${pattern}$`);
 }

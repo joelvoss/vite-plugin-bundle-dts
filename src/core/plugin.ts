@@ -1,15 +1,17 @@
 import { existsSync, realpathSync } from 'node:fs';
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
-import { cpus } from 'node:os';
-import { dirname, basename, relative } from 'node:path';
-
-import ts from 'typescript';
 import {
-	createLogger,
-	type Logger,
-	type Plugin,
-	type ResolvedConfig,
-} from 'vite';
+	lstat,
+	mkdir,
+	readFile,
+	realpath,
+	unlink,
+	writeFile,
+} from 'node:fs/promises';
+import { cpus } from 'node:os';
+import { dirname, isAbsolute, relative } from 'node:path';
+
+import ts from '@typescript/typescript6';
+import { createLogger, type Logger, type Plugin } from 'vite';
 
 import { createJsonResolver } from '../resolvers/json.ts';
 import type { BundleDtsOptions, DtsResolver, PathAlias } from '../types.ts';
@@ -56,6 +58,47 @@ const defaultIndex = 'index.d.ts';
 const pluginName = 'vite-plugin-bundle-dts';
 const logPrefix = `[${pluginName}]`;
 const noop = () => {};
+
+function isPathInside(root: string, filePath: string): boolean {
+	const relativePath = normalizePath(relative(root, filePath));
+	return (
+		relativePath !== '..' &&
+		!relativePath.startsWith('../') &&
+		!isAbsolute(relativePath)
+	);
+}
+
+async function resolveRealOutputPath(
+	filePath: string,
+): Promise<string | undefined> {
+	let ancestor = filePath;
+	while (true) {
+		try {
+			return resolvePath(await realpath(ancestor), relative(ancestor, filePath));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+				throw error;
+			}
+			// A dangling symlink must not be treated as a missing path suffix.
+			const existing = await lstat(ancestor).catch(
+				(statError: NodeJS.ErrnoException) => {
+					if (statError.code !== 'ENOENT') {
+						throw statError;
+					}
+					return undefined;
+				},
+			);
+			if (existing) {
+				return undefined;
+			}
+			const parent = dirname(ancestor);
+			if (parent === ancestor) {
+				return undefined;
+			}
+			ancestor = parent;
+		}
+	}
+}
 
 // These options intentionally override whatever comes from tsconfig because the
 // plugin only exists to produce declaration output.
@@ -163,11 +206,8 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 	let host: ts.CompilerHost | undefined;
 	let program: ts.Program | undefined;
 	let filter: ReturnType<typeof createFilter> | undefined;
-	let rootNames: string[] = [];
-	let rebuildProgram: (() => ts.Program) | undefined;
 	let bundled = false;
 	let timeRecord = 0;
-	let viteConfig: ResolvedConfig | undefined;
 	let realRootPrefix = '';
 	let rootPrefix = '';
 
@@ -180,6 +220,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 	// These collections track the declaration graph across the build lifecycle.
 	const rootFiles = new Set<string>();
 	const outputFiles = new Map<string, string>();
+	const sourceMapPaths = new Map<string, string>();
 	const transformedFiles = new Set<string>();
 	const diagnostics: ts.Diagnostic[] = [];
 	const rollupConfig = {
@@ -198,8 +239,19 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 		return normalizedId;
 	}
 
-	function setOutputFile(filePath: string, content: string): void {
+	function setOutputFile(
+		filePath: string,
+		content: string,
+		originalPath?: string,
+	): void {
 		outputFiles.set(filePath, content);
+		if (filePath.endsWith('.map') && originalPath) {
+			// Map coordinates belong to the compiler or resolver output location,
+			// not the synthetic source-tree key used to lay out declarations.
+			sourceMapPaths.set(filePath, originalPath);
+		} else {
+			sourceMapPaths.delete(filePath);
+		}
 	}
 
 	function parseViteAliases(aliasOptions: unknown): void {
@@ -249,7 +301,6 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			// Once Vite resolves the full config we can lock in output directories,
 			// entry names, and the logger instance that should be used for
 			// diagnostics.
-			viteConfig = config;
 			logger = logLevel
 				? createLogger(logLevel, { allowClearScreen: config.clearScreen })
 				: config.logger;
@@ -304,30 +355,14 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			// Vite can call buildStart more than once in watch mode or when
 			// building multiple environments (Vite 8+). Refresh the cached
 			// declaration state here so each build cycle starts clean.
-			if (program) {
-				bundled = false;
-				timeRecord = 0;
-				outputFiles.clear();
-				transformedFiles.clear();
-				diagnostics.length = 0;
-				for (const file of rootNames) {
-					rootFiles.add(file);
-				}
-				if (rebuildProgram) {
-					program = rebuildProgram();
-					diagnostics.push(
-						...program.getDeclarationDiagnostics(),
-						...program.getSemanticDiagnostics(),
-						...program.getSyntacticDiagnostics(),
-					);
-				}
-				return;
-			}
-
 			const startTime = Date.now();
-			// Start each build with a clean emission cache so files from previous
-			// runs do not leak into the next writeBundle phase.
+			const firstBuild = !program;
+			bundled = false;
+			timeRecord = 0;
+			rootFiles.clear();
 			outputFiles.clear();
+			sourceMapPaths.clear();
+			transformedFiles.clear();
 			diagnostics.length = 0;
 			if (!realRootPrefix) {
 				const normalizedRoot = normalizePath(root);
@@ -346,27 +381,42 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 				? ensureAbsolute(tsconfigPath, root)
 				: ts.findConfigFile(root, ts.sys.fileExists);
 			const content = configPath ? loadTsConfig(configPath) : undefined;
-			compilerOptions = {
-				...content?.options,
-				...options.compilerOptions,
-				...fixedCompilerOptions,
-				outDir: '.',
-				declarationDir: '.',
-			};
+			if (!compilerOptions) {
+				compilerOptions = {
+					...content?.options,
+					...options.compilerOptions,
+					...fixedCompilerOptions,
+					outDir: '.',
+					declarationDir: '.',
+				};
+				if (options.compilerOptions?.paths) {
+					// Plugin paths belong to its project root, even when the tsconfig
+					// supplies an inherited pathsBasePath or baseUrl.
+					compilerOptions.paths = Object.fromEntries(
+						Object.entries(options.compilerOptions.paths).map(([key, paths]) => [
+							key,
+							paths.map((path) =>
+								ensureAbsolute(resolveConfigDir(path, root), root),
+							),
+						]),
+					);
+					compilerOptions.pathsBasePath = root;
+				}
 
-			// TypeScript 6 changed how `commonSourceDirectory` is computed when
-			// `configFilePath` is present: it uses the tsconfig directory instead
-			// of the deepest common ancestor of source files. This causes emit
-			// paths to include extra directory segments (e.g. `./src/index.d.ts`
-			// instead of `./index.d.ts`). Since the plugin has already parsed the
-			// tsconfig and extracted everything it needs, removing this property
-			// restores the previous emit-path behaviour.
-			delete compilerOptions.configFilePath;
+				// TypeScript 6 changed how `commonSourceDirectory` is computed when
+				// `configFilePath` is present: it uses the tsconfig directory instead
+				// of the deepest common ancestor of source files. This causes emit
+				// paths to include extra directory segments (e.g. `./src/index.d.ts`
+				// instead of `./index.d.ts`). Since the plugin has already parsed the
+				// tsconfig and extracted everything it needs, removing this property
+				// restores the previous emit-path behaviour.
+				delete compilerOptions.configFilePath;
 
-			rawCompilerOptions =
-				(content?.raw.compilerOptions as Record<string, unknown> | undefined) ??
-				{};
-			setModuleResolution(compilerOptions);
+				rawCompilerOptions =
+					(content?.raw.compilerOptions as Record<string, unknown> | undefined) ??
+					{};
+				setModuleResolution(compilerOptions);
+			}
 
 			// Output directories come from the plugin option first, then tsconfig,
 			// then Vite.
@@ -383,18 +433,13 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 						];
 			}
 
-			const baseUrl = compilerOptions.paths ? process.cwd() : undefined;
+			const pathsBasePath =
+				compilerOptions.baseUrl ??
+				(compilerOptions.pathsBasePath as string | undefined) ??
+				root;
 			const paths = compilerOptions.paths;
-			if (pathsToAliases && baseUrl && paths) {
-				aliases.push(
-					...parseTsAliases(
-						ensureAbsolute(
-							resolveConfigDir(baseUrl, root),
-							configPath ? dirname(configPath) : root,
-						),
-						paths,
-					),
-				);
+			if (firstBuild && pathsToAliases && paths) {
+				aliases.push(...parseTsAliases(pathsBasePath, paths));
 			}
 
 			const computeGlobs = (
@@ -443,23 +488,20 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			// Root names include both declared library entries and every filtered
 			// tsconfig file so the emitted declaration graph is complete even for
 			// re-export chains.
-			rootNames = Array.from(
+			const rootNames = Array.from(
 				new Set(
 					[...entryValues, ...(content?.fileNames.filter(filter) ?? [])].map(
 						normalizePath,
 					),
 				),
 			);
-			rebuildProgram = () => {
-				host = ts.createCompilerHost(compilerOptions!);
-				return ts.createProgram({
-					host,
-					rootNames,
-					options: compilerOptions!,
-					projectReferences: content?.projectReferences,
-				});
-			};
-			program = rebuildProgram();
+			host = ts.createCompilerHost(compilerOptions);
+			program = ts.createProgram({
+				host,
+				rootNames,
+				options: compilerOptions,
+				projectReferences: content?.projectReferences,
+			});
 
 			// Prefer TS rootDir when available; otherwise compute the shallowest
 			// shared source directory so emitted relative paths stay stable across
@@ -486,17 +528,20 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 				...program.getSyntacticDiagnostics(),
 			);
 
-			for (const file of rootNames) {
-				rootFiles.add(file);
-			}
-
 			// Watch every participating source file, not just entry files.
 			// Resolver-backed assets such as JSON never become TS root names on
 			// their own, but they still need to invalidate the declaration graph
 			// when they change.
 			for (const sourceFile of program.getSourceFiles()) {
-				if (filter?.(sourceFile.fileName)) {
+				if (filter(sourceFile.fileName)) {
 					this.addWatchFile(sourceFile.fileName);
+					// Type-only imports never reach Vite's runtime transform pipeline.
+					if (
+						tjsRE.test(sourceFile.fileName) &&
+						maybeEmitSourceFile(program, compilerOptions, sourceFile)
+					) {
+						rootFiles.add(sourceFile.fileName);
+					}
 				}
 			}
 
@@ -555,6 +600,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 							relative(outDir, ensureAbsolute(path, outDir)),
 						),
 						content,
+						ensureAbsolute(path, outDir),
 					);
 				}
 			} else {
@@ -569,7 +615,11 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 								publicRoot,
 								relative(outDir, ensureAbsolute(name, outDir)),
 							);
-							setOutputFile(key, text);
+							setOutputFile(
+								key,
+								text,
+								ensureAbsolute(name, host!.getCurrentDirectory()),
+							);
 						},
 						undefined,
 						true,
@@ -580,7 +630,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 				}
 			}
 
-			const dtsId = normalizedId.replace(tjsRE, '') + '.d.ts';
+			const dtsId = tsToDts(normalizedId);
 			const dtsSourceFile = program.getSourceFile(dtsId);
 			if (dtsSourceFile && filter(dtsSourceFile.fileName)) {
 				// TS can synthesize a declaration file for JS/TS inputs without
@@ -594,35 +644,6 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 
 			timeRecord += Date.now() - startTime;
 			return undefined;
-		},
-		watchChange(id) {
-			const normalizedId = normalizeId(normalizePath(id).split('?')[0]);
-			const resolver = resolvers.find((entry) => entry.supports(normalizedId));
-			if (
-				!host ||
-				!program ||
-				!filter ||
-				!filter(normalizedId) ||
-				(!resolver && !tjsRE.test(normalizedId))
-			) {
-				return;
-			}
-
-			// Requeue every root file because TypeScript declarations can change
-			// transitively when any dependency changes, even if the changed file
-			// is not an entry itself.
-			for (const file of rootNames) {
-				rootFiles.add(file);
-			}
-
-			rootFiles.add(normalizedId);
-			bundled = false;
-			timeRecord = 0;
-			outputFiles.clear();
-			diagnostics.length = 0;
-			if (rebuildProgram) {
-				program = rebuildProgram();
-			}
 		},
 		async writeBundle() {
 			// writeBundle is the single point that flushes the accumulated
@@ -647,6 +668,28 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			}
 			await unwrapPromise(afterDiagnostic(diagnostics));
 
+			const isOutputAllowed = async (
+				filePath: string,
+				targetOutDir: string,
+			): Promise<boolean> => {
+				if (!strictOutput) {
+					return true;
+				}
+				if (isPathInside(targetOutDir, filePath)) {
+					const realOutDir = await resolveRealOutputPath(targetOutDir);
+					const realFilePath = await resolveRealOutputPath(filePath);
+					if (
+						realOutDir &&
+						realFilePath &&
+						isPathInside(realOutDir, realFilePath)
+					) {
+						return true;
+					}
+				}
+				logger.warn(`${logPrefix} Outside emitted: ${filePath}`);
+				return false;
+			};
+
 			const writeOutput = async (
 				filePath: string,
 				content: string,
@@ -663,19 +706,33 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 					return;
 				}
 
-				let resolvedPath = normalizePath(filePath);
+				let resolvedPath = filePath;
 				let resolvedContent = content;
 				if (maybeResult && typeof maybeResult === 'object') {
-					resolvedPath = normalizePath(maybeResult.filePath ?? resolvedPath);
+					resolvedPath = maybeResult.filePath ?? resolvedPath;
 					resolvedContent = maybeResult.content ?? resolvedContent;
 				}
 
-				const dir = normalizePath(dirname(resolvedPath));
-				if (strictOutput && !dir.startsWith(normalizePath(targetOutDir))) {
-					logger.warn(`${logPrefix} Outside emitted: ${resolvedPath}`);
+				resolvedPath = resolvePath(normalizePath(resolvedPath));
+				if (!(await isOutputAllowed(resolvedPath, targetOutDir))) {
 					return;
 				}
 
+				const dir = dirname(resolvedPath);
+				if (filePath.endsWith('.map') && dir !== dirname(filePath)) {
+					const updated = editSourceMapDir(
+						resolvedContent,
+						dirname(filePath),
+						dir,
+					);
+					if (updated === false) {
+						logger.warn(
+							`${logPrefix} Processing source map fail: ${resolvedPath}`,
+						);
+					} else if (typeof updated === 'string') {
+						resolvedContent = updated;
+					}
+				}
 				await mkdir(dir, { recursive: true });
 				await writeFile(resolvedPath, resolvedContent, 'utf8');
 				if (record) {
@@ -729,6 +786,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 								relative(outDir, ensureAbsolute(path, outDir)),
 							),
 							content,
+							ensureAbsolute(path, outDir),
 						);
 					}
 					transformedFiles.add(sourceFile.fileName);
@@ -744,6 +802,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 									relative(outDir, ensureAbsolute(name, outDir)),
 								),
 								text,
+								ensureAbsolute(name, host!.getCurrentDirectory()),
 							);
 						},
 						undefined,
@@ -806,26 +865,22 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 				cpus().length,
 				Array.from(mapFiles.entries()),
 				async ([filePath, content]) => {
-					const baseDir = dirname(filePath);
 					const outputPath = resolvePath(outDir, relative(entryRoot, filePath));
 					let nextContent = content;
 					try {
-						const sourceMap = JSON.parse(content) as {
-							sources: string[];
+						const updated = editSourceMapDir(
+							content,
+							dirname(sourceMapPaths.get(filePath) ?? outputPath),
+							dirname(outputPath),
+						);
+						if (updated === false) {
+							throw new Error('Invalid source map');
+						}
+						const sourceMap = JSON.parse(
+							typeof updated === 'string' ? updated : content,
+						) as {
 							mappings: string;
 						};
-						sourceMap.sources = sourceMap.sources.map((source) =>
-							normalizePath(
-								relative(
-									dirname(outputPath),
-									resolvePath(
-										viteConfig?.root ?? root,
-										relative(publicRoot, baseDir),
-										source,
-									),
-								),
-							),
-						);
 						if (prependMappings.has(outputPath)) {
 							sourceMap.mappings = `${prependMappings.get(outputPath)}${sourceMap.mappings}`;
 						}
@@ -886,17 +941,39 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 					);
 					let fromPath = normalizePath(
 						relative(dirname(entryDtsPath), sourceEntry),
-					).replace(dtsRE, '');
+					).replace(dtsRE, (_extension, prefix: string | undefined) =>
+						prefix ||
+						compilerOptions?.moduleResolution ===
+							ts.ModuleResolutionKind.Node16 ||
+						compilerOptions?.moduleResolution ===
+							ts.ModuleResolutionKind.NodeNext
+							? `.${prefix ?? ''}js`
+							: '',
+					);
 					fromPath = fullRelativeRE.test(fromPath) ? fromPath : `./${fromPath}`;
 
 					let shimContent = 'export {}\n';
 					const emittedEntry = emittedFiles.get(sourceEntry);
 					if (emittedEntry) {
-						if (hasNormalExport(emittedEntry)) {
-							shimContent = `export * from '${fromPath}'\n${shimContent}`;
-						}
-						if (hasExportDefault(emittedEntry)) {
-							shimContent += `import ${libName} from '${fromPath}'\nexport default ${libName}\n`;
+						const hasExportEquals = ts
+							.createSourceFile(
+								sourceEntry,
+								emittedEntry,
+								ts.ScriptTarget.Latest,
+							)
+							.statements.some(
+								(statement) =>
+									ts.isExportAssignment(statement) && statement.isExportEquals,
+							);
+						if (hasExportEquals) {
+							shimContent = `import ${libName} = require('${fromPath}')\nexport = ${libName}\n`;
+						} else {
+							if (hasNormalExport(emittedEntry)) {
+								shimContent = `export * from '${fromPath}'\n${shimContent}`;
+							}
+							if (hasExportDefault(emittedEntry)) {
+								shimContent += `import ${libName} from '${fromPath}'\nexport default ${libName}\n`;
+							}
 						}
 					}
 
@@ -912,6 +989,9 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 					const rollupFiles = new Set<string>();
 
 					const rollupEntry = async (filePath: string): Promise<void> => {
+						if (!(await isOutputAllowed(filePath, outDir))) {
+							return;
+						}
 						// API Extractor writes the bundled entry in place, so the original
 						// emitted declaration becomes temporary build state that can be
 						// deleted afterwards.
@@ -921,8 +1001,8 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 							compilerOptions: compilerOptionsForRollup,
 							outDir,
 							entryPath: filePath,
-							fileName: basename(filePath),
-							libFolder: getTsLibFolder(publicRoot),
+							fileName: relative(outDir, filePath),
+							libFolder: getTsLibFolder(),
 							rollupConfig,
 							rollupOptions,
 						});
@@ -958,7 +1038,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 							await writeOutput(
 								filePath,
 								declared ? `${content}\n${declared}` : content,
-								dirname(filePath),
+								outDir,
 							);
 						},
 					);
@@ -981,8 +1061,8 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 								if (writtenFile.endsWith('.map')) {
 									const updated = editSourceMapDir(
 										content,
-										outDir,
-										targetOutDir,
+										dirname(writtenFile),
+										dirname(targetPath),
 									);
 									if (updated === false) {
 										logger.warn(

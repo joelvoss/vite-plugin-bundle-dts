@@ -17,10 +17,14 @@ During `vite build`, the plugin:
 ## Install
 
 ```bash
-npm install -D vite-plugin-bundle-dts typescript
+npm install -D vite-plugin-bundle-dts typescript@^7
 ```
 
 The plugin requires Vite `>=5`.
+
+TypeScript 7 is supported. Since TypeScript 7 no longer exposes the legacy
+JavaScript compiler API needed for declaration generation, the plugin uses
+Microsoft's TypeScript 6 compatibility package internally.
 
 ## Quick start
 
@@ -72,9 +76,8 @@ For a conventional package, keep these files aligned:
 		"moduleResolution": "Bundler",
 		"declaration": true,
 		"rootDir": "src",
-		"baseUrl": ".",
 		"paths": {
-			"@/*": ["src/*"]
+			"@/*": ["./src/*"]
 		}
 	},
 	"include": ["src"]
@@ -415,9 +418,8 @@ Merges additional TypeScript compiler options into the loaded config.
 ```ts
 bundleDts({
 	compilerOptions: {
-		baseUrl: '.',
 		paths: {
-			'@/*': ['src/*'],
+			'@/*': ['./src/*'],
 		},
 	},
 });
@@ -675,6 +677,9 @@ interface DtsResolverContext {
 	program: ts.Program;
 }
 ```
+
+The `host` and `program` use the TypeScript 6 compatibility API bundled with
+the plugin. They are not instances of TypeScript 7's native compiler API.
 
 They can return either:
 

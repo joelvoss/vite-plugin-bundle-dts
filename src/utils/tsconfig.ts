@@ -1,6 +1,6 @@
 import { dirname } from 'node:path';
 
-import ts from 'typescript';
+import ts from '@typescript/typescript6';
 
 import { ensureAbsolute } from './common.ts';
 
@@ -81,7 +81,7 @@ export function setModuleResolution(options: ts.CompilerOptions): void {
 
 	switch (moduleKind) {
 		case ts.ModuleKind.CommonJS:
-			options.moduleResolution = ts.ModuleResolutionKind.Node10;
+			options.moduleResolution = ts.ModuleResolutionKind.Bundler;
 			break;
 		case ts.ModuleKind.Node16:
 			options.moduleResolution = ts.ModuleResolutionKind.Node16;
