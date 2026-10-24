@@ -18,7 +18,7 @@ import ts from '@typescript/typescript6';
 import { build, type InlineConfig } from 'vite';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import dtsPlugin from '../src';
+import dtsPlugin, { type DtsPluginOptions } from '../src';
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const fixturesDir = resolve(currentDir, 'fixtures');
@@ -1695,6 +1695,295 @@ describe('plugin hooks', () => {
 
 		await expectFile(resolve(root, 'escaped.d.ts'));
 	});
+});
+
+describe('strictOutput containment', () => {
+	async function buildOutputFixture(
+		root: string,
+		options: DtsPluginOptions,
+	): Promise<void> {
+		await build({
+			configFile: false,
+			root,
+			logLevel: 'silent',
+			build: {
+				emptyOutDir: false,
+				lib: {
+					entry: resolve(root, 'src/index.ts'),
+					name: 'StrictOutputFixture',
+					fileName: 'index',
+				},
+			},
+			plugins: [dtsPlugin({ declarationOnly: true, ...options })],
+		});
+	}
+
+	it.each([
+		['sibling directory', 'dist-escape/nested/index.d.ts', false],
+		['parent traversal', 'dist/nested/../../escaped.d.ts', false],
+		['sibling traversal', 'dist/nested/../../dist-escape/index.d.ts', false],
+		['nested directory', 'dist/nested/deeper/index.d.ts', true],
+		['normalized nested directory', 'dist/unused/../nested/index.d.ts', true],
+		['dot-prefixed directory', 'dist/..nested/index.d.ts', true],
+		['dot-prefixed file', 'dist/..index.d.ts', true],
+	] as const)(
+		'checks redirected paths for %s',
+		async (_name, outputPath, allowed) => {
+			const root = await createFixtureWorkspace('hooks-basic');
+			let emitted: ReadonlyMap<string, string> | undefined;
+			await buildOutputFixture(root, {
+				include: ['src/*.ts'],
+				beforeWriteFile() {
+					return { filePath: `${root}/${outputPath}` };
+				},
+				afterBuild(files) {
+					emitted = files;
+				},
+			});
+
+			const targetPath = resolve(root, outputPath);
+			if (allowed) {
+				expect(await readFile(targetPath, 'utf8')).toContain(
+					'export interface Shape',
+				);
+				expect(Array.from(emitted?.keys() ?? [])).toEqual([targetPath]);
+			} else {
+				await expectNoFile(targetPath);
+				expect(emitted?.size).toBe(0);
+			}
+			await expectNoFile(resolve(root, 'dist/index.d.ts'));
+		},
+	);
+
+	it.each([
+		['directory', true],
+		['directory', false],
+		['file', true],
+		['file', false],
+	] as const)(
+		'checks an external %s symlink with strictOutput=%s',
+		async (kind, strictOutput) => {
+			const root = await createFixtureWorkspace('hooks-basic');
+			const outsideDir = resolve(root, 'dist-escape');
+			const outsideFile = resolve(outsideDir, 'index.d.ts');
+			const sentinel = 'export declare const untouched: true;\n';
+			await mkdir(resolve(root, 'dist'), { recursive: true });
+			await mkdir(outsideDir);
+			await writeFile(outsideFile, sentinel, 'utf8');
+			const linkPath = resolve(
+				root,
+				kind === 'file' ? 'dist/linked.d.ts' : 'dist/linked',
+			);
+			await symlink(
+				kind === 'file' ? outsideFile : outsideDir,
+				linkPath,
+				kind === 'file' ? 'file' : 'dir',
+			);
+			const outputPath =
+				kind === 'file' ? linkPath : resolve(linkPath, 'new/nested/index.d.ts');
+			const physicalPath =
+				kind === 'file'
+					? outsideFile
+					: resolve(outsideDir, 'new/nested/index.d.ts');
+			let emitted: ReadonlyMap<string, string> | undefined;
+			await buildOutputFixture(root, {
+				strictOutput,
+				beforeWriteFile() {
+					return { filePath: outputPath };
+				},
+				afterBuild(files) {
+					emitted = files;
+				},
+			});
+
+			if (strictOutput) {
+				expect(emitted?.size).toBe(0);
+				if (kind === 'directory') {
+					await expectNoFile(resolve(outsideDir, 'new'));
+				}
+			} else {
+				expect(await readFile(physicalPath, 'utf8')).toContain(
+					'export interface Shape',
+				);
+				expect(emitted?.has(outputPath)).toBe(true);
+			}
+			if (strictOutput || kind === 'directory') {
+				expect(await readFile(outsideFile, 'utf8')).toBe(sentinel);
+			}
+		},
+	);
+
+	it('rejects a dangling file symlink without creating its external target', async () => {
+		const root = await createFixtureWorkspace('hooks-basic');
+		const outsideFile = resolve(root, 'dist-escape/missing.d.ts');
+		const linkPath = resolve(root, 'dist/linked.d.ts');
+		await mkdir(dirname(linkPath));
+		await mkdir(dirname(outsideFile));
+		await symlink(outsideFile, linkPath, 'file');
+		await buildOutputFixture(root, {
+			beforeWriteFile() {
+				return { filePath: linkPath };
+			},
+		});
+
+		await expectNoFile(outsideFile);
+	});
+
+	it.each(['output root', 'internal directory', 'internal file'] as const)(
+		'allows a safe symlink for the %s',
+		async (kind) => {
+			const root = await createFixtureWorkspace('hooks-basic');
+			const physicalDir = resolve(
+				root,
+				kind === 'output root' ? 'physical-dist' : 'dist/physical',
+			);
+			await mkdir(physicalDir, { recursive: true });
+			const physicalFile = resolve(physicalDir, 'index.d.ts');
+			if (kind === 'internal file') {
+				await writeFile(physicalFile, 'export {};\n', 'utf8');
+			}
+			const linkPath = resolve(
+				root,
+				kind === 'output root'
+					? 'dist'
+					: kind === 'internal file'
+						? 'dist/linked.d.ts'
+						: 'dist/linked',
+			);
+			await symlink(
+				kind === 'internal file' ? physicalFile : physicalDir,
+				linkPath,
+				kind === 'internal file' ? 'file' : 'dir',
+			);
+			const outputPath =
+				kind === 'internal file'
+					? linkPath
+					: resolve(linkPath, 'new/nested/index.d.ts');
+			await buildOutputFixture(root, {
+				beforeWriteFile() {
+					return { filePath: outputPath };
+				},
+			});
+
+			const physicalPath =
+				kind === 'internal file'
+					? physicalFile
+					: resolve(physicalDir, 'new/nested/index.d.ts');
+			expect(await readFile(physicalPath, 'utf8')).toContain(
+				'export interface Shape',
+			);
+		},
+	);
+
+	it.each(['sibling', 'symlink', 'nested'] as const)(
+		'checks the secondary output boundary for a %s redirect',
+		async (kind) => {
+			const root = await createFixtureWorkspace('hooks-basic');
+			const outsideDir = resolve(root, 'secondary-escape');
+			if (kind === 'symlink') {
+				await mkdir(resolve(root, 'secondary'));
+				await mkdir(outsideDir);
+				await symlink(outsideDir, resolve(root, 'secondary/linked'), 'dir');
+			}
+			const outputPath = resolve(
+				root,
+				kind === 'sibling'
+					? 'secondary-escape/index.d.ts'
+					: kind === 'symlink'
+						? 'secondary/linked/new/index.d.ts'
+						: 'secondary/new/index.d.ts',
+			);
+			let redirected = false;
+			await buildOutputFixture(root, {
+				outDir: ['dist', 'secondary'],
+				beforeWriteFile(filePath) {
+					if (filePath === resolve(root, 'secondary/index.d.ts')) {
+						redirected = true;
+						return { filePath: outputPath };
+					}
+					return undefined;
+				},
+			});
+
+			expect(redirected).toBe(true);
+			await expectFile(resolve(root, 'dist/index.d.ts'));
+			await expectNoFile(resolve(root, 'secondary/index.d.ts'));
+			if (kind === 'nested') {
+				await expectFile(outputPath);
+			} else {
+				await expectNoFile(outputPath);
+			}
+		},
+	);
+
+	it.each([
+		['../renamed.d.ts', true],
+		['../types-escape/renamed.d.ts', true],
+		['../../dist-escape/renamed.d.ts', false],
+	] as const)(
+		'checks the configured root for a final rollup redirect to %s',
+		async (redirect, allowed) => {
+			const root = await createFixtureWorkspace('insert-types-entry');
+			let rolledUp = false;
+			await buildOutputFixture(root, {
+				rollupTypes: true,
+				afterRollup() {
+					rolledUp = true;
+				},
+				beforeWriteFile(filePath) {
+					return rolledUp
+						? { filePath: `${dirname(filePath)}/${redirect}` }
+						: undefined;
+				},
+			});
+
+			expect(rolledUp).toBe(true);
+			const targetPath = resolve(root, 'dist/types', redirect);
+			if (allowed) {
+				expect(await readFile(targetPath, 'utf8')).toContain(
+					'export declare const namedValue = 7;',
+				);
+			} else {
+				await expectNoFile(targetPath);
+			}
+		},
+		rollupIntegrationTimeoutMs,
+	);
+
+	it.each(['sibling', 'file symlink'] as const)(
+		'does not roll up an existing external entry through a %s',
+		async (kind) => {
+			const root = await createFixtureWorkspace('insert-types-entry');
+			const outsideFile = resolve(root, 'dist-escape/entry.d.ts');
+			const sentinel = 'export declare const untouched: true;\n';
+			await mkdir(dirname(outsideFile));
+			await writeFile(outsideFile, sentinel, 'utf8');
+			if (kind === 'sibling') {
+				await writeFile(
+					resolve(root, 'package.json'),
+					JSON.stringify({
+						name: 'strict-output-fixture',
+						types: 'dist-escape/entry.d.ts',
+					}),
+					'utf8',
+				);
+			} else {
+				await mkdir(resolve(root, 'dist/types'), { recursive: true });
+				await symlink(outsideFile, resolve(root, 'dist/types/entry.d.ts'), 'file');
+			}
+			let rolledUp = false;
+			await buildOutputFixture(root, {
+				rollupTypes: true,
+				afterRollup() {
+					rolledUp = true;
+				},
+			});
+
+			expect(await readFile(outsideFile, 'utf8')).toBe(sentinel);
+			expect(rolledUp).toBe(false);
+		},
+		rollupIntegrationTimeoutMs,
+	);
 });
 
 describe('multiple outDirs', () => {

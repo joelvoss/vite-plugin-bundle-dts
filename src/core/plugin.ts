@@ -1,7 +1,14 @@
 import { existsSync, realpathSync } from 'node:fs';
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import {
+	lstat,
+	mkdir,
+	readFile,
+	realpath,
+	unlink,
+	writeFile,
+} from 'node:fs/promises';
 import { cpus } from 'node:os';
-import { dirname, relative } from 'node:path';
+import { dirname, isAbsolute, relative } from 'node:path';
 
 import ts from '@typescript/typescript6';
 import {
@@ -56,6 +63,47 @@ const defaultIndex = 'index.d.ts';
 const pluginName = 'vite-plugin-bundle-dts';
 const logPrefix = `[${pluginName}]`;
 const noop = () => {};
+
+function isPathInside(root: string, filePath: string): boolean {
+	const relativePath = normalizePath(relative(root, filePath));
+	return (
+		relativePath !== '..' &&
+		!relativePath.startsWith('../') &&
+		!isAbsolute(relativePath)
+	);
+}
+
+async function resolveRealOutputPath(
+	filePath: string,
+): Promise<string | undefined> {
+	let ancestor = filePath;
+	while (true) {
+		try {
+			return resolvePath(await realpath(ancestor), relative(ancestor, filePath));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+				throw error;
+			}
+			// A dangling symlink must not be treated as a missing path suffix.
+			const existing = await lstat(ancestor).catch(
+				(statError: NodeJS.ErrnoException) => {
+					if (statError.code !== 'ENOENT') {
+						throw statError;
+					}
+					return undefined;
+				},
+			);
+			if (existing) {
+				return undefined;
+			}
+			const parent = dirname(ancestor);
+			if (parent === ancestor) {
+				return undefined;
+			}
+			ancestor = parent;
+		}
+	}
+}
 
 // These options intentionally override whatever comes from tsconfig because the
 // plugin only exists to produce declaration output.
@@ -609,6 +657,28 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			}
 			await unwrapPromise(afterDiagnostic(diagnostics));
 
+			const isOutputAllowed = async (
+				filePath: string,
+				targetOutDir: string,
+			): Promise<boolean> => {
+				if (!strictOutput) {
+					return true;
+				}
+				if (isPathInside(targetOutDir, filePath)) {
+					const realOutDir = await resolveRealOutputPath(targetOutDir);
+					const realFilePath = await resolveRealOutputPath(filePath);
+					if (
+						realOutDir &&
+						realFilePath &&
+						isPathInside(realOutDir, realFilePath)
+					) {
+						return true;
+					}
+				}
+				logger.warn(`${logPrefix} Outside emitted: ${filePath}`);
+				return false;
+			};
+
 			const writeOutput = async (
 				filePath: string,
 				content: string,
@@ -625,19 +695,19 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 					return;
 				}
 
-				let resolvedPath = normalizePath(filePath);
+				let resolvedPath = filePath;
 				let resolvedContent = content;
 				if (maybeResult && typeof maybeResult === 'object') {
-					resolvedPath = normalizePath(maybeResult.filePath ?? resolvedPath);
+					resolvedPath = maybeResult.filePath ?? resolvedPath;
 					resolvedContent = maybeResult.content ?? resolvedContent;
 				}
 
-				const dir = normalizePath(dirname(resolvedPath));
-				if (strictOutput && !dir.startsWith(normalizePath(targetOutDir))) {
-					logger.warn(`${logPrefix} Outside emitted: ${resolvedPath}`);
+				resolvedPath = resolvePath(normalizePath(resolvedPath));
+				if (!(await isOutputAllowed(resolvedPath, targetOutDir))) {
 					return;
 				}
 
+				const dir = dirname(resolvedPath);
 				await mkdir(dir, { recursive: true });
 				await writeFile(resolvedPath, resolvedContent, 'utf8');
 				if (record) {
@@ -896,6 +966,9 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 					const rollupFiles = new Set<string>();
 
 					const rollupEntry = async (filePath: string): Promise<void> => {
+						if (!(await isOutputAllowed(filePath, outDir))) {
+							return;
+						}
 						// API Extractor writes the bundled entry in place, so the original
 						// emitted declaration becomes temporary build state that can be
 						// deleted afterwards.
@@ -942,7 +1015,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 							await writeOutput(
 								filePath,
 								declared ? `${content}\n${declared}` : content,
-								dirname(filePath),
+								outDir,
 							);
 						},
 					);
