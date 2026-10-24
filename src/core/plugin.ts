@@ -163,8 +163,6 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 	let host: ts.CompilerHost | undefined;
 	let program: ts.Program | undefined;
 	let filter: ReturnType<typeof createFilter> | undefined;
-	let rootNames: string[] = [];
-	let rebuildProgram: (() => ts.Program) | undefined;
 	let bundled = false;
 	let timeRecord = 0;
 	let viteConfig: ResolvedConfig | undefined;
@@ -304,30 +302,13 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			// Vite can call buildStart more than once in watch mode or when
 			// building multiple environments (Vite 8+). Refresh the cached
 			// declaration state here so each build cycle starts clean.
-			if (program) {
-				bundled = false;
-				timeRecord = 0;
-				outputFiles.clear();
-				transformedFiles.clear();
-				diagnostics.length = 0;
-				for (const file of rootNames) {
-					rootFiles.add(file);
-				}
-				if (rebuildProgram) {
-					program = rebuildProgram();
-					diagnostics.push(
-						...program.getDeclarationDiagnostics(),
-						...program.getSemanticDiagnostics(),
-						...program.getSyntacticDiagnostics(),
-					);
-				}
-				return;
-			}
-
 			const startTime = Date.now();
-			// Start each build with a clean emission cache so files from previous
-			// runs do not leak into the next writeBundle phase.
+			const firstBuild = !program;
+			bundled = false;
+			timeRecord = 0;
+			rootFiles.clear();
 			outputFiles.clear();
+			transformedFiles.clear();
 			diagnostics.length = 0;
 			if (!realRootPrefix) {
 				const normalizedRoot = normalizePath(root);
@@ -346,40 +327,42 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 				? ensureAbsolute(tsconfigPath, root)
 				: ts.findConfigFile(root, ts.sys.fileExists);
 			const content = configPath ? loadTsConfig(configPath) : undefined;
-			compilerOptions = {
-				...content?.options,
-				...options.compilerOptions,
-				...fixedCompilerOptions,
-				outDir: '.',
-				declarationDir: '.',
-			};
-			if (options.compilerOptions?.paths) {
-				// Plugin paths belong to its project root, even when the tsconfig
-				// supplies an inherited pathsBasePath or baseUrl.
-				compilerOptions.paths = Object.fromEntries(
-					Object.entries(options.compilerOptions.paths).map(([key, paths]) => [
-						key,
-						paths.map((path) =>
-							ensureAbsolute(resolveConfigDir(path, root), root),
-						),
-					]),
-				);
-				compilerOptions.pathsBasePath = root;
+			if (!compilerOptions) {
+				compilerOptions = {
+					...content?.options,
+					...options.compilerOptions,
+					...fixedCompilerOptions,
+					outDir: '.',
+					declarationDir: '.',
+				};
+				if (options.compilerOptions?.paths) {
+					// Plugin paths belong to its project root, even when the tsconfig
+					// supplies an inherited pathsBasePath or baseUrl.
+					compilerOptions.paths = Object.fromEntries(
+						Object.entries(options.compilerOptions.paths).map(([key, paths]) => [
+							key,
+							paths.map((path) =>
+								ensureAbsolute(resolveConfigDir(path, root), root),
+							),
+						]),
+					);
+					compilerOptions.pathsBasePath = root;
+				}
+
+				// TypeScript 6 changed how `commonSourceDirectory` is computed when
+				// `configFilePath` is present: it uses the tsconfig directory instead
+				// of the deepest common ancestor of source files. This causes emit
+				// paths to include extra directory segments (e.g. `./src/index.d.ts`
+				// instead of `./index.d.ts`). Since the plugin has already parsed the
+				// tsconfig and extracted everything it needs, removing this property
+				// restores the previous emit-path behaviour.
+				delete compilerOptions.configFilePath;
+
+				rawCompilerOptions =
+					(content?.raw.compilerOptions as Record<string, unknown> | undefined) ??
+					{};
+				setModuleResolution(compilerOptions);
 			}
-
-			// TypeScript 6 changed how `commonSourceDirectory` is computed when
-			// `configFilePath` is present: it uses the tsconfig directory instead
-			// of the deepest common ancestor of source files. This causes emit
-			// paths to include extra directory segments (e.g. `./src/index.d.ts`
-			// instead of `./index.d.ts`). Since the plugin has already parsed the
-			// tsconfig and extracted everything it needs, removing this property
-			// restores the previous emit-path behaviour.
-			delete compilerOptions.configFilePath;
-
-			rawCompilerOptions =
-				(content?.raw.compilerOptions as Record<string, unknown> | undefined) ??
-				{};
-			setModuleResolution(compilerOptions);
 
 			// Output directories come from the plugin option first, then tsconfig,
 			// then Vite.
@@ -401,7 +384,7 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 				(compilerOptions.pathsBasePath as string | undefined) ??
 				root;
 			const paths = compilerOptions.paths;
-			if (pathsToAliases && paths) {
+			if (firstBuild && pathsToAliases && paths) {
 				aliases.push(...parseTsAliases(pathsBasePath, paths));
 			}
 
@@ -451,23 +434,20 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			// Root names include both declared library entries and every filtered
 			// tsconfig file so the emitted declaration graph is complete even for
 			// re-export chains.
-			rootNames = Array.from(
+			const rootNames = Array.from(
 				new Set(
 					[...entryValues, ...(content?.fileNames.filter(filter) ?? [])].map(
 						normalizePath,
 					),
 				),
 			);
-			rebuildProgram = () => {
-				host = ts.createCompilerHost(compilerOptions!);
-				return ts.createProgram({
-					host,
-					rootNames,
-					options: compilerOptions!,
-					projectReferences: content?.projectReferences,
-				});
-			};
-			program = rebuildProgram();
+			host = ts.createCompilerHost(compilerOptions);
+			program = ts.createProgram({
+				host,
+				rootNames,
+				options: compilerOptions,
+				projectReferences: content?.projectReferences,
+			});
 
 			// Prefer TS rootDir when available; otherwise compute the shallowest
 			// shared source directory so emitted relative paths stay stable across
@@ -494,17 +474,20 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 				...program.getSyntacticDiagnostics(),
 			);
 
-			for (const file of rootNames) {
-				rootFiles.add(file);
-			}
-
 			// Watch every participating source file, not just entry files.
 			// Resolver-backed assets such as JSON never become TS root names on
 			// their own, but they still need to invalidate the declaration graph
 			// when they change.
 			for (const sourceFile of program.getSourceFiles()) {
-				if (filter?.(sourceFile.fileName)) {
+				if (filter(sourceFile.fileName)) {
 					this.addWatchFile(sourceFile.fileName);
+					// Type-only imports never reach Vite's runtime transform pipeline.
+					if (
+						tjsRE.test(sourceFile.fileName) &&
+						maybeEmitSourceFile(program, compilerOptions, sourceFile)
+					) {
+						rootFiles.add(sourceFile.fileName);
+					}
 				}
 			}
 
@@ -602,35 +585,6 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 
 			timeRecord += Date.now() - startTime;
 			return undefined;
-		},
-		watchChange(id) {
-			const normalizedId = normalizeId(normalizePath(id).split('?')[0]);
-			const resolver = resolvers.find((entry) => entry.supports(normalizedId));
-			if (
-				!host ||
-				!program ||
-				!filter ||
-				!filter(normalizedId) ||
-				(!resolver && !tjsRE.test(normalizedId))
-			) {
-				return;
-			}
-
-			// Requeue every root file because TypeScript declarations can change
-			// transitively when any dependency changes, even if the changed file
-			// is not an entry itself.
-			for (const file of rootNames) {
-				rootFiles.add(file);
-			}
-
-			rootFiles.add(normalizedId);
-			bundled = false;
-			timeRecord = 0;
-			outputFiles.clear();
-			diagnostics.length = 0;
-			if (rebuildProgram) {
-				program = rebuildProgram();
-			}
 		},
 		async writeBundle() {
 			// writeBundle is the single point that flushes the accumulated
