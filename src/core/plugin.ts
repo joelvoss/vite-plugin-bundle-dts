@@ -231,6 +231,9 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			[],
 	};
 
+	// Normalize module IDs to ensure consistent path handling across the build.
+	// This function lives inside the plugin closure to capture the current
+	// root prefix and ensure consistent path normalization across all hooks.
 	function normalizeId(id: string): string {
 		const normalizedId = normalizePath(id);
 		if (realRootPrefix && normalizedId.startsWith(realRootPrefix)) {
@@ -239,6 +242,10 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 		return normalizedId;
 	}
 
+	// Sets the output file content and tracks source map paths for proper
+	// resolution during the build lifecycle. It lives inside the plugin closure
+	// to maintain access to the current output and source map tracking
+	// structures.
 	function setOutputFile(
 		filePath: string,
 		content: string,
@@ -254,6 +261,9 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 		}
 	}
 
+	// Parses Vite alias configurations and normalizes them into a consistent
+	// internal format. This function lives inside the plugin closure to capture
+	// the current root and path normalization logic.
 	function parseViteAliases(aliasOptions: unknown): void {
 		// Vite accepts aliases either as an object map or as explicit finder
 		// entries. Normalize both into one internal shape before later path
@@ -534,7 +544,10 @@ export function bundleDts(options: BundleDtsOptions = {}): Plugin {
 			// when they change.
 			for (const sourceFile of program.getSourceFiles()) {
 				if (filter(sourceFile.fileName)) {
-					this.addWatchFile(sourceFile.fileName);
+					// Match the canonical paths reported by filesystem watchers.
+					this.addWatchFile(
+						host.realpath?.(sourceFile.fileName) ?? sourceFile.fileName,
+					);
 					// Type-only imports never reach Vite's runtime transform pipeline.
 					if (
 						tjsRE.test(sourceFile.fileName) &&
